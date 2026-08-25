@@ -1,0 +1,495 @@
+#!/bin/zsh
+set -euo pipefail
+
+VERSION="2.0.0"
+APP_NAME="Codex"
+REAL_CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+STORE="$HOME/.codex-multi"
+ACCOUNTS="$STORE/accounts"
+ACTIVE_FILE="$STORE/active"
+
+mkdir -p "$ACCOUNTS"
+chmod 700 "$STORE" "$ACCOUNTS" 2>/dev/null || true
+
+die() {
+  print -u2 "❌ $*"
+  exit 1
+}
+
+info() {
+  print "→ $*"
+}
+
+usage() {
+  cat <<EOF
+csm v${VERSION} — Codex multi-account switcher & quota manager
+
+Commands:
+  csm add <name>       Login to an account safely and save it
+  csm refresh <name>   Re-login to an existing account safely
+  csm use <name>       Switch Codex App to that account and restart it
+  csm use <name> --no-restart
+                       Switch auth without restarting Codex App
+  csm list             List saved accounts
+  csm status           Show remaining 5h/weekly limits for all accounts
+  csm pick             Pick the healthiest account and switch to it
+  csm current          Show active account
+  csm remove <name>    Remove a saved account
+  csm update           Update csm to the latest version from GitHub
+  csm version          Show csm version
+  csm help             Show this help
+
+Examples:
+  csm add personal
+  csm add work
+  csm status
+  csm pick
+  csm use personal
+EOF
+}
+
+safe_name() {
+  local name="$1"
+  [[ "$name" =~ '^[A-Za-z0-9._-]+$' ]] || \
+    die "Account name may only contain letters, numbers, dot, underscore and dash."
+  print "$name"
+}
+
+save_active_auth() {
+  if [[ -f "$ACTIVE_FILE" && -f "$REAL_CODEX_HOME/auth.json" ]]; then
+    local active
+    active="$(<"$ACTIVE_FILE")"
+    if [[ -n "$active" && -f "$ACCOUNTS/$active.json" ]]; then
+      cp "$REAL_CODEX_HOME/auth.json" "$ACCOUNTS/$active.json"
+      chmod 600 "$ACCOUNTS/$active.json"
+    fi
+  fi
+}
+
+isolated_login() {
+  local name="$1"
+  command -v codex >/dev/null 2>&1 || die "codex CLI not found."
+
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/csm-login.XXXXXX")"
+
+  cleanup_login_tmp() {
+    [[ -n "${tmp:-}" && -d "${tmp:-}" ]] && rm -rf "$tmp"
+  }
+  trap cleanup_login_tmp EXIT INT TERM
+
+  cat > "$tmp/config.toml" <<'EOF'
+cli_auth_credentials_store = "file"
+EOF
+
+  print ""
+  print "🔐 '$name' için izole Codex girişi açılıyor."
+  print "   Mevcut ~/.codex/auth.json bu işlemde Codex'e gösterilmeyecek."
+  print "   Böylece mevcut hesabın refresh token'ı revoke edilmemeli."
+  print ""
+
+  if ! CODEX_HOME="$tmp" codex login; then
+    cleanup_login_tmp
+    trap - EXIT INT TERM
+    die "Login iptal edildi veya başarısız oldu."
+  fi
+
+  [[ -f "$tmp/auth.json" ]] || {
+    cleanup_login_tmp
+    trap - EXIT INT TERM
+    die "Login tamamlandı ancak auth.json oluşturulmadı."
+  }
+
+  cp "$tmp/auth.json" "$ACCOUNTS/$name.json"
+  chmod 600 "$ACCOUNTS/$name.json"
+
+  cleanup_login_tmp
+  trap - EXIT INT TERM
+
+  print "✅ '$name' kaydedildi."
+}
+
+restart_codex() {
+  info "Codex App yeniden başlatılıyor..."
+  /usr/bin/osascript -e 'tell application "Codex" to quit' >/dev/null 2>&1 || true
+  sleep 1
+  /usr/bin/open -a "$APP_NAME"
+}
+
+switch_account() {
+  local name="$1"
+  local restart="${2:-yes}"
+
+  [[ -f "$ACCOUNTS/$name.json" ]] || die "No saved account named '$name'. Run: csm add $name"
+
+  mkdir -p "$REAL_CODEX_HOME"
+
+  # Preserve refreshes generated while current account was active.
+  save_active_auth
+
+  cp "$ACCOUNTS/$name.json" "$REAL_CODEX_HOME/auth.json"
+  chmod 600 "$REAL_CODEX_HOME/auth.json"
+  print -r -- "$name" > "$ACTIVE_FILE"
+
+  print "✅ Active Codex account: $name"
+  print "   Project/session files under ~/.codex were not changed."
+
+  if [[ "$restart" == "yes" ]]; then
+    restart_codex
+  fi
+}
+
+status_accounts() {
+  command -v python3 >/dev/null 2>&1 || die "python3 not found."
+
+  # If the active account was refreshed by Codex App/CLI, persist it first.
+  save_active_auth
+
+  CSM_ACCOUNTS="$ACCOUNTS" CSM_ACTIVE_FILE="$ACTIVE_FILE" python3 <<'PY'
+import os, json, time, base64, urllib.request, urllib.error
+from pathlib import Path
+
+ACCOUNTS = Path(os.environ["CSM_ACCOUNTS"])
+ACTIVE_FILE = Path(os.environ["CSM_ACTIVE_FILE"])
+USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+AUTH_URL = "https://auth.openai.com/oauth/token"
+CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+
+active = ACTIVE_FILE.read_text().strip() if ACTIVE_FILE.exists() else ""
+
+def b64url_decode(s):
+    s += "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s.encode())
+
+def jwt_payload(token):
+    try:
+        return json.loads(b64url_decode(token.split(".")[1]))
+    except Exception:
+        return {}
+
+def is_expired(token, skew=60):
+    p = jwt_payload(token)
+    exp = p.get("exp")
+    return isinstance(exp, (int, float)) and exp <= time.time() + skew
+
+def refresh_auth(auth, path):
+    tokens = auth.get("tokens") or {}
+    access = tokens.get("access_token")
+    refresh = tokens.get("refresh_token")
+    if not access or not refresh or not is_expired(access):
+        return auth
+
+    body = json.dumps({
+        "client_id": CLIENT_ID,
+        "grant_type": "refresh_token",
+        "refresh_token": refresh,
+    }).encode()
+
+    req = urllib.request.Request(
+        AUTH_URL, data=body, method="POST",
+        headers={"Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(req, timeout=20) as r:
+        data = json.load(r)
+
+    for k in ("access_token", "refresh_token", "id_token"):
+        if not data.get(k):
+            raise RuntimeError(f"refresh response missing {k}")
+
+    auth["tokens"] = {**tokens,
+        "access_token": data["access_token"],
+        "refresh_token": data["refresh_token"],
+        "id_token": data["id_token"],
+    }
+    auth["last_refresh"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    path.write_text(json.dumps(auth, indent=2))
+    os.chmod(path, 0o600)
+    return auth
+
+def fmt_seconds(sec):
+    if sec is None:
+        return "?"
+    try:
+        sec = max(0, int(sec))
+    except Exception:
+        return "?"
+    d, rem = divmod(sec, 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    out = []
+    if d: out.append(f"{d}d")
+    if h: out.append(f"{h}h")
+    if m and not d: out.append(f"{m}m")
+    return " ".join(out) if out else "<1m"
+
+def reset_in(w):
+    if not w:
+        return "?"
+    if w.get("reset_after_seconds") is not None:
+        return fmt_seconds(w["reset_after_seconds"])
+    if w.get("reset_at") is not None:
+        return fmt_seconds(w["reset_at"] - int(time.time()))
+    return "?"
+
+def bar(left):
+    left = max(0.0, min(100.0, left))
+    filled = round(left / 5)
+    return "█" * filled + "░" * (20 - filled)
+
+def fetch_usage(auth):
+    tokens = auth.get("tokens") or {}
+    access = tokens.get("access_token")
+    if not access:
+        raise RuntimeError("OAuth access token yok")
+
+    headers = {"Authorization": f"Bearer {access}"}
+    account_id = tokens.get("account_id")
+    if account_id:
+        headers["ChatGPT-Account-ID"] = account_id
+
+    req = urllib.request.Request(USAGE_URL, headers=headers)
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.load(r)
+
+rows = []
+files = sorted(ACCOUNTS.glob("*.json"))
+
+if not files:
+    print("Saved account yok. Önce: csm add <name>")
+    raise SystemExit(0)
+
+print("")
+print("Codex kullanım hakları")
+print("────────────────────────────────────────────────────────────────")
+
+for path in files:
+    name = path.stem
+    mark = "●" if name == active else " "
+    try:
+        auth = json.loads(path.read_text())
+        auth = refresh_auth(auth, path)
+        data = fetch_usage(auth)
+        rl = data.get("rate_limit") or {}
+        p = rl.get("primary_window") or {}
+        s = rl.get("secondary_window") or {}
+
+        p_used = float(p.get("used_percent", 0))
+        s_used = float(s.get("used_percent", 0))
+        p_left = max(0.0, 100.0 - p_used)
+        s_left = max(0.0, 100.0 - s_used)
+        plan = data.get("plan_type") or "?"
+
+        # Primary is normally the 5h window, secondary is weekly.
+        score = min(p_left, s_left)
+        rows.append((score, p_left, s_left, name))
+
+        print(f"{mark} {name} [{plan}]")
+        print(f"   5h  {bar(p_left)} {p_left:5.1f}% left   reset {reset_in(p)}")
+        print(f"   7d  {bar(s_left)} {s_left:5.1f}% left   reset {reset_in(s)}")
+
+        credits = data.get("credits")
+        if isinstance(credits, dict) and credits.get("balance") is not None:
+            print(f"   Credits: ${credits.get('balance')}")
+        print()
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode("utf-8", "replace")
+            msg = json.loads(body).get("error", {}).get("code") or body[:120]
+        except Exception:
+            msg = f"HTTP {e.code}"
+        print(f"{mark} {name}")
+        print(f"   ❌ Kullanım bilgisi alınamadı: {msg}")
+        print()
+    except Exception as e:
+        print(f"{mark} {name}")
+        print(f"   ❌ {e}")
+        print()
+
+if rows:
+    best = max(rows, key=lambda x: (x[0], x[1] + x[2]))
+    print("────────────────────────────────────────────────────────────────")
+    print(f"Önerilen: {best[3]}  (5h {best[1]:.1f}% / 7d {best[2]:.1f}% kaldı)")
+PY
+}
+
+pick_account() {
+  command -v python3 >/dev/null 2>&1 || die "python3 not found."
+
+  save_active_auth
+
+  local picked
+  picked="$(
+    CSM_ACCOUNTS="$ACCOUNTS" python3 <<'PY'
+import os, json, time, base64, urllib.request
+from pathlib import Path
+
+A = Path(os.environ["CSM_ACCOUNTS"])
+USAGE = "https://chatgpt.com/backend-api/wham/usage"
+AUTH = "https://auth.openai.com/oauth/token"
+CLIENT = "app_EMoamEEZ73f0CkXaXp7hrann"
+
+def dec(s):
+    s += "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s.encode())
+
+def expired(t):
+    try:
+        p=json.loads(dec(t.split(".")[1]))
+        return p.get("exp", 0) <= time.time()+60
+    except Exception:
+        return False
+
+def refresh(a,p):
+    t=a.get("tokens") or {}
+    if t.get("access_token") and t.get("refresh_token") and expired(t["access_token"]):
+        body=json.dumps({"client_id":CLIENT,"grant_type":"refresh_token","refresh_token":t["refresh_token"]}).encode()
+        req=urllib.request.Request(AUTH,data=body,method="POST",headers={"Content-Type":"application/json"})
+        with urllib.request.urlopen(req,timeout=20) as r: d=json.load(r)
+        t={**t,"access_token":d["access_token"],"refresh_token":d["refresh_token"],"id_token":d["id_token"]}
+        a["tokens"]=t
+        p.write_text(json.dumps(a,indent=2)); os.chmod(p,0o600)
+    return a
+
+best=None
+for p in A.glob("*.json"):
+    try:
+        a=refresh(json.loads(p.read_text()),p)
+        t=a.get("tokens") or {}
+        h={"Authorization":"Bearer "+t["access_token"]}
+        if t.get("account_id"): h["ChatGPT-Account-ID"]=t["account_id"]
+        with urllib.request.urlopen(urllib.request.Request(USAGE,headers=h),timeout=20) as r:
+            u=json.load(r)
+        rl=u.get("rate_limit") or {}
+        pw=rl.get("primary_window") or {}
+        sw=rl.get("secondary_window") or {}
+        pleft=max(0.0,100-float(pw.get("used_percent",0)))
+        sleft=max(0.0,100-float(sw.get("used_percent",0)))
+        # Prefer the account whose bottleneck has the most capacity.
+        score=(min(pleft,sleft), pleft+sleft)
+        if best is None or score>best[0]:
+            best=(score,p.stem)
+    except Exception:
+        pass
+
+if best:
+    print(best[1])
+PY
+  )"
+
+  [[ -n "$picked" ]] || die "Hiçbir hesaptan geçerli kullanım bilgisi alınamadı."
+  print "🏆 En uygun hesap: $picked"
+  switch_account "$picked" "yes"
+}
+
+update_csm() {
+  info "Checking for updates and downloading the latest csm..."
+  local target_path
+  target_path="$(command -v csm 2>/dev/null || echo "$0")"
+  
+  local tmp_file
+  tmp_file="$(mktemp "${TMPDIR:-/tmp}/csm-update.XXXXXX")"
+  
+  if curl -fsSL "https://raw.githubusercontent.com/mazisel/csm/main/csm" -o "$tmp_file"; then
+    chmod +x "$tmp_file"
+    if [[ -w "$target_path" ]]; then
+      mv "$tmp_file" "$target_path"
+    else
+      print "⚠️  Sudo permission required to update '$target_path':"
+      sudo mv "$tmp_file" "$target_path"
+    fi
+    print "✅ csm successfully updated to latest version!"
+  else
+    rm -f "$tmp_file"
+    die "Failed to download update from GitHub."
+  fi
+}
+
+cmd="${1:-help}"
+
+case "$cmd" in
+  add)
+    [[ $# -ge 2 ]] || die "Usage: csm add <name>"
+    name="$(safe_name "$2")"
+    [[ ! -f "$ACCOUNTS/$name.json" ]] || die "'$name' already exists. Use: csm refresh $name"
+    isolated_login "$name"
+    ;;
+
+  refresh)
+    [[ $# -ge 2 ]] || die "Usage: csm refresh <name>"
+    name="$(safe_name "$2")"
+    [[ -f "$ACCOUNTS/$name.json" ]] || die "No saved account named '$name'."
+    isolated_login "$name"
+    ;;
+
+  use)
+    [[ $# -ge 2 ]] || die "Usage: csm use <name> [--no-restart]"
+    name="$(safe_name "$2")"
+    if [[ "${3:-}" == "--no-restart" ]]; then
+      switch_account "$name" "no"
+      print "   Restart Codex App manually to load the new account."
+    else
+      switch_account "$name" "yes"
+    fi
+    ;;
+
+  list)
+    print "Saved accounts:"
+    active=""
+    [[ -f "$ACTIVE_FILE" ]] && active="$(<"$ACTIVE_FILE")"
+    found=0
+    for f in "$ACCOUNTS"/*.json(N); do
+      found=1
+      name="${f:t:r}"
+      if [[ "$name" == "$active" ]]; then
+        print "  * $name  (active)"
+      else
+        print "    $name"
+      fi
+    done
+    (( found )) || print "  (none)"
+    ;;
+
+  status)
+    status_accounts
+    ;;
+
+  pick)
+    pick_account
+    ;;
+
+  current)
+    if [[ -f "$ACTIVE_FILE" ]]; then
+      cat "$ACTIVE_FILE"
+    else
+      print "(not set)"
+    fi
+    ;;
+
+  remove)
+    [[ $# -ge 2 ]] || die "Usage: csm remove <name>"
+    name="$(safe_name "$2")"
+    [[ -f "$ACCOUNTS/$name.json" ]] || die "No saved account named '$name'."
+    rm -f "$ACCOUNTS/$name.json"
+    if [[ -f "$ACTIVE_FILE" && "$(<"$ACTIVE_FILE")" == "$name" ]]; then
+      rm -f "$ACTIVE_FILE"
+    fi
+    print "✅ '$name' removed."
+    ;;
+
+  update)
+    update_csm
+    ;;
+
+  version|-v|--version)
+    print "csm v$VERSION"
+    ;;
+
+  help|-h|--help)
+    usage
+    ;;
+
+  *)
+    usage
+    exit 1
+    ;;
+esac
