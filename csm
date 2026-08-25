@@ -141,22 +141,36 @@ def isolated_login(name: str):
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 def restart_codex():
-    info("Restarting Codex App...")
+    info("Restarting Codex / ChatGPT App...")
     sys_plat = platform.system()
     if sys_plat == "Darwin":
+        # Try quitting by Bundle ID, then app names
+        subprocess.run(["/usr/bin/osascript", "-e", 'tell application id "com.openai.codex" to quit'], capture_output=True)
+        subprocess.run(["/usr/bin/osascript", "-e", 'tell application "ChatGPT" to quit'], capture_output=True)
         subprocess.run(["/usr/bin/osascript", "-e", 'tell application "Codex" to quit'], capture_output=True)
-        time.sleep(1)
-        subprocess.run(["/usr/bin/open", "-a", APP_NAME], capture_output=True)
+        subprocess.run(["/usr/bin/pkill", "-f", "codex.*app-server"], capture_output=True)
+        time.sleep(1.5)
+        
+        # Re-open by bundle ID or fallback to app names
+        res = subprocess.run(["/usr/bin/open", "-b", "com.openai.codex"], capture_output=True)
+        if res.returncode != 0:
+            res = subprocess.run(["/usr/bin/open", "-a", "ChatGPT"], capture_output=True)
+        if res.returncode != 0:
+            subprocess.run(["/usr/bin/open", "-a", "Codex"], capture_output=True)
     elif sys_plat == "Windows":
         subprocess.run(["taskkill", "/IM", "Codex.exe", "/F"], capture_output=True)
+        subprocess.run(["taskkill", "/IM", "ChatGPT.exe", "/F"], capture_output=True)
         time.sleep(1)
         try:
             os.startfile("Codex")
         except Exception:
             try:
-                subprocess.Popen(["cmd", "/c", "start", "codex"], shell=True)
-            except Exception as e:
-                print(f"⚠️  Could not automatically restart Codex Desktop App: {e}")
+                os.startfile("ChatGPT")
+            except Exception:
+                try:
+                    subprocess.Popen(["cmd", "/c", "start", "codex"], shell=True)
+                except Exception as e:
+                    print(f"⚠️  Could not automatically restart Desktop App: {e}")
     elif sys_plat == "Linux":
         subprocess.run(["killall", "codex"], capture_output=True)
         time.sleep(1)
