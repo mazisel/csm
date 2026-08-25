@@ -7,6 +7,10 @@
 
 A powerful, safe, cross-platform **Multi-Account Switcher & Real-Time Quota Manager** for OpenAI Codex on **macOS**, **Windows**, and **Linux**.
 
+<p align="center">
+  <img src="demo.gif" alt="csm Terminal Demo" width="700">
+</p>
+
 Easily switch between personal, work, and secondary accounts, monitor 5-hour and 7-day rate limits live, and let `csm` automatically pick the account with the most remaining quota.
 
 ---
