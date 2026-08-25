@@ -1,11 +1,11 @@
 # ⚡ csm (Codex Account Switcher & Quota Manager)
 
-[![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://apple.com)
-[![Shell](https://img.shields.io/badge/shell-zsh-blue.svg)](https://www.zsh.org/)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)](https://github.com/mazisel/csm)
+[![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.0-green.svg)](https://github.com/mazisel/csm)
+[![Version](https://img.shields.io/badge/version-2.1.0-green.svg)](https://github.com/mazisel/csm)
 
-A powerful, safe, and lightning-fast **Multi-Account Switcher & Real-Time Quota Manager** for OpenAI Codex on macOS.
+A powerful, safe, cross-platform **Multi-Account Switcher & Real-Time Quota Manager** for OpenAI Codex on **macOS**, **Windows**, and **Linux**.
 
 Easily switch between personal, work, and secondary accounts, monitor 5-hour and 7-day rate limits live, and let `csm` automatically pick the account with the most remaining quota.
 
@@ -13,34 +13,28 @@ Easily switch between personal, work, and secondary accounts, monitor 5-hour and
 
 ## ✨ Features
 
-- 🔄 **Zero-Disruption Account Switching:** Switch active Codex accounts instantly without losing project history or session data.
+- 🌐 **Cross-Platform:** Works natively on **macOS**, **Windows (PowerShell & CMD)**, and **Linux** with zero external pip dependencies.
+- 🔄 **Zero-Disruption Account Switching:** Switch active Codex accounts in milliseconds without losing project history or session data.
 - 📊 **Live Quota & Rate-Limit Visualizer (`csm status`):** See remaining percentages and reset countdowns for both **5-hour** and **7-day** windows for all your saved accounts.
 - 🏆 **Smart Auto-Pick (`csm pick`):** Automatically evaluates all your accounts and switches to the one with the highest available quota.
 - 🔐 **Isolated Safe Login:** Uses isolated temporary credential sandboxes during `csm add` to prevent existing refresh tokens from being revoked by OpenAI.
-- 🖥️ **Codex Desktop App Integration:** Automatically restarts the macOS Codex app to apply the newly switched account immediately.
+- 🖥️ **Codex Desktop App Integration:** Automatically restarts the macOS or Windows Codex desktop app to apply the newly switched account immediately.
 - 🚀 **Self-Updating:** Keep `csm` up to date with a single `csm update` command.
 
 ---
 
 ## 📦 Quick Installation
 
-Run the one-line installer in your macOS terminal:
-
+### 🍎 macOS & 🐧 Linux (Terminal)
+Run this one-liner in your terminal:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mazisel/csm/main/install.sh | bash
 ```
 
-### Manual Installation (Alternative)
-
-```bash
-# Download and install to ~/.local/bin
-mkdir -p ~/.local/bin
-curl -fsSL https://raw.githubusercontent.com/mazisel/csm/main/csm -o ~/.local/bin/csm
-chmod +x ~/.local/bin/csm
-
-# Ensure ~/.local/bin is in your PATH (if not already)
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
+### 🪟 Windows (PowerShell)
+Open PowerShell and run:
+```powershell
+irm https://raw.githubusercontent.com/mazisel/csm/main/install.ps1 | iex
 ```
 
 ---
@@ -61,7 +55,7 @@ csm status
 
 **Example Output:**
 ```text
-Codex kullanım hakları
+Codex Rate Limits & Usage
 ────────────────────────────────────────────────────────────────
 ● personal [plus]
    5h  ████████████████░░░░  80.0% left   reset 3h 12m
@@ -73,7 +67,7 @@ Codex kullanım hakları
    Credits: $15.00
 
 ────────────────────────────────────────────────────────────────
-Önerilen: personal  (5h 80.0% / 7d 100.0% kaldı)
+Recommended: personal  (5h: 80.0% / 7d: 100.0% remaining)
 ```
 
 ### 3. Switch accounts
@@ -113,9 +107,9 @@ csm pick
 
 ## 🔒 Security & Storage
 
-- **Local Storage:** All authentication tokens are stored strictly on your local machine under `~/.codex-multi/accounts/`.
-- **Strict File Permissions:** Files are secured with `chmod 600` (readable only by your user account).
-- **No Telemetry / No Third-party:** `csm` directly connects only to official OpenAI API endpoints (`auth.openai.com` and `chatgpt.com`).
+- **Local Storage:** All authentication tokens are stored strictly on your local machine under `~/.codex-multi/accounts/` (or `%USERPROFILE%\.codex-multi\accounts\` on Windows).
+- **Strict File Permissions:** Files are secured with `chmod 600` on Unix systems.
+- **No Telemetry / No Third-party:** `csm` connects directly and solely to official OpenAI API endpoints (`auth.openai.com` and `chatgpt.com`).
 
 ---
 
@@ -127,23 +121,33 @@ csm update
 ```
 
 ### Uninstall
-```bash
-rm -f ~/.local/bin/csm
-rm -rf ~/.codex-multi
-```
+- **macOS / Linux:**
+  ```bash
+  rm -f ~/.local/bin/csm
+  rm -rf ~/.codex-multi
+  ```
+- **Windows (PowerShell):**
+  ```powershell
+  Remove-Item -Recurse -Force "$HOME\.local\bin\csm*"
+  Remove-Item -Recurse -Force "$HOME\.codex-multi"
+  ```
 
 ---
 
 ## 🇹🇷 Türkçe Açıklama
 
-`csm`, macOS üzerinde Codex kullanıcıları için geliştirilmiş çoklu hesap geçiş ve anlık kota takip yöneticisidir.
+`csm`, **macOS**, **Windows** ve **Linux** üzerinde OpenAI Codex için geliştirilmiş çoklu hesap geçiş ve canlı kota takip yöneticisidir.
 
-- **Kurulum:** `curl -fsSL https://raw.githubusercontent.com/mazisel/csm/main/install.sh | bash`
-- **Hesap Ekleme:** `csm add hesap_adi`
-- **Kotaları Görüntüleme:** `csm status`
-- **Hesap Değiştirme:** `csm use hesap_adi`
-- **En Yüksek Kotalı Hesaba Otomatik Geçiş:** `csm pick`
-- **Güncelleme:** `csm update`
+### Kurulum
+- **macOS / Linux:** `curl -fsSL https://raw.githubusercontent.com/mazisel/csm/main/install.sh | bash`
+- **Windows (PowerShell):** `irm https://raw.githubusercontent.com/mazisel/csm/main/install.ps1 | iex`
+
+### Temel Komutlar
+- **Hesap Ekle:** `csm add hesap_adi`
+- **Kotaları Görüntüle:** `csm status`
+- **Hesap Değiştir:** `csm use hesap_adi`
+- **En Yüksek Kotalı Hesaba Geç:** `csm pick`
+- **Güncelle:** `csm update`
 
 ---
 

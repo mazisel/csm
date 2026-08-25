@@ -9,10 +9,15 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}   Installing csm (Codex Account Switcher)  ${NC}"
+echo -e "${BLUE}   Installing csm (Codex Switcher)      ${NC}"
 echo -e "${BLUE}========================================${NC}"
 
-# Target install directory
+# Check for Python 3
+if ! command -v python3 >/dev/null 2>&1; then
+  echo -e "${RED}❌ Error: python3 is required but not found in PATH.${NC}"
+  exit 1
+fi
+
 INSTALL_DIR="$HOME/.local/bin"
 mkdir -p "$INSTALL_DIR"
 
@@ -58,7 +63,7 @@ echo ""
 echo -e "${GREEN}✅ csm successfully installed to ${TARGET}!${NC}"
 echo ""
 if [ "$NEED_PATH_EXPORT" -eq 1 ]; then
-  echo -e "${YELLOW}👉 Run this command now to activate it in this terminal session:${NC}"
+  echo -e "${YELLOW}👉 Run this command now to activate it in your current terminal session:${NC}"
   echo -e "   ${BLUE}export PATH=\"\$HOME/.local/bin:\$PATH\"${NC}"
   echo ""
 fi
