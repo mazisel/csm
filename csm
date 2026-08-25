@@ -443,10 +443,18 @@ def remove_account(name: str):
 def update_csm():
     info("Checking for updates and downloading latest csm...")
     target_path = Path(os.path.realpath(__file__))
-    download_url = "https://raw.githubusercontent.com/mazisel/csm/main/csm"
+    cache_buster = int(time.time())
+    download_url = f"https://raw.githubusercontent.com/mazisel/csm/main/csm?t={cache_buster}"
     
     try:
-        req = urllib.request.Request(download_url, headers={"User-Agent": "csm-updater"})
+        req = urllib.request.Request(
+            download_url,
+            headers={
+                "User-Agent": "csm-updater",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache"
+            }
+        )
         with urllib.request.urlopen(req, timeout=20) as r:
             new_content = r.read()
 
