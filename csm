@@ -25,7 +25,7 @@ if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
 if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 APP_NAME = "Codex"
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 STORE_DIR = Path.home() / ".codex-multi"
@@ -336,9 +336,21 @@ def status_accounts():
             print(f"   5h  {progress_bar(p_left)} {p_left:5.1f}% left   reset {reset_in(p)}")
             print(f"   7d  {progress_bar(s_left)} {s_left:5.1f}% left   reset {reset_in(s)}")
 
+            reset_credits = data.get("rate_limit_reset_credits")
+            if isinstance(reset_credits, dict):
+                avail = reset_credits.get("available_count", 0)
+                app_avail = reset_credits.get("applicable_available_count", 0)
+                if avail > 0:
+                    status_note = " (can apply now)" if app_avail > 0 else ""
+                    print(f"   ⚡ Resets: {avail} available{status_note}")
+                else:
+                    print(f"   ⚡ Resets: 0")
+
             credits = data.get("credits")
             if isinstance(credits, dict) and credits.get("balance") is not None:
-                print(f"   Credits: ${credits.get('balance')}")
+                bal = str(credits.get("balance"))
+                if bal != "0":
+                    print(f"   💵 Credits: ${bal}")
             print()
         except urllib.error.HTTPError as e:
             try:

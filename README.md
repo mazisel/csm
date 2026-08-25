@@ -3,7 +3,7 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)](https://github.com/mazisel/csm)
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.1.0-green.svg)](https://github.com/mazisel/csm)
+[![Version](https://img.shields.io/badge/version-2.2.0-green.svg)](https://github.com/mazisel/csm)
 
 A powerful, safe, cross-platform **Multi-Account Switcher & Real-Time Quota Manager** for OpenAI Codex on **macOS**, **Windows**, and **Linux**.
 
@@ -64,11 +64,13 @@ Codex Rate Limits & Usage
 ● personal [plus]
    5h  ████████████████░░░░  80.0% left   reset 3h 12m
    7d  ████████████████████ 100.0% left   reset ?
+   ⚡ Resets: 1 available
 
   work [team]
    5h  ████░░░░░░░░░░░░░░░░  20.0% left   reset 45m
    7d  ██████████████░░░░░░  70.0% left   reset 2d 4h
-   Credits: $15.00
+   ⚡ Resets: 1 available (can apply now)
+   💵 Credits: $15.00
 
 ────────────────────────────────────────────────────────────────
 Recommended: personal  (5h: 80.0% / 7d: 100.0% remaining)
