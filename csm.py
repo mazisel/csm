@@ -17,6 +17,7 @@ import tempfile
 import platform
 import subprocess
 import re
+from datetime import datetime
 from pathlib import Path
 
 # Ensure UTF-8 output on Windows consoles
@@ -25,7 +26,7 @@ if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
 if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 APP_NAME = "Codex"
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 STORE_DIR = Path.home() / ".codex-multi"
@@ -33,6 +34,7 @@ ACCOUNTS_DIR = STORE_DIR / "accounts"
 ACTIVE_FILE = STORE_DIR / "active"
 
 USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
 AUTH_URL = "https://auth.openai.com/oauth/token"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 
@@ -266,6 +268,22 @@ def fmt_seconds(sec) -> str:
     if m and not d: out.append(f"{m}m")
     return " ".join(out) if out else "<1m"
 
+def fmt_expiry(exp_iso: str) -> str:
+    if not exp_iso:
+        return ""
+    try:
+        if exp_iso.endswith("Z"):
+            exp_clean = exp_iso[:-1] + "+00:00"
+        else:
+            exp_clean = exp_iso
+        dt = datetime.fromisoformat(exp_clean)
+        formatted_date = dt.strftime("%d %b")
+        seconds_left = max(0, int(dt.timestamp() - time.time()))
+        rel = fmt_seconds(seconds_left)
+        return f"expires {formatted_date} ({rel} left)"
+    except Exception:
+        return f"expires {exp_iso[:10]}"
+
 def reset_in(w: dict) -> str:
     if not w:
         return "?"
@@ -294,6 +312,24 @@ def fetch_usage(auth: dict) -> dict:
     req = urllib.request.Request(USAGE_URL, headers=headers)
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.load(r)
+
+def fetch_reset_credits(auth: dict) -> dict:
+    tokens = auth.get("tokens") or {}
+    access = tokens.get("access_token")
+    if not access:
+        return {}
+
+    headers = {"Authorization": f"Bearer {access}"}
+    account_id = tokens.get("account_id")
+    if account_id:
+        headers["ChatGPT-Account-ID"] = account_id
+
+    req = urllib.request.Request(RESET_CREDITS_URL, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.load(r)
+    except Exception:
+        return {}
 
 def status_accounts():
     save_active_auth()
@@ -336,15 +372,27 @@ def status_accounts():
             print(f"   5h  {progress_bar(p_left)} {p_left:5.1f}% left   reset {reset_in(p)}")
             print(f"   7d  {progress_bar(s_left)} {s_left:5.1f}% left   reset {reset_in(s)}")
 
-            reset_credits = data.get("rate_limit_reset_credits")
-            if isinstance(reset_credits, dict):
-                avail = reset_credits.get("available_count", 0)
-                app_avail = reset_credits.get("applicable_available_count", 0)
-                if avail > 0:
-                    status_note = " (can apply now)" if app_avail > 0 else ""
-                    print(f"   ⚡ Resets: {avail} available{status_note}")
-                else:
-                    print(f"   ⚡ Resets: 0")
+            reset_data = fetch_reset_credits(auth)
+            credits_list = reset_data.get("credits", []) if isinstance(reset_data, dict) else []
+            avail = reset_data.get("available_count")
+            rc = data.get("rate_limit_reset_credits") or {}
+            app_avail = rc.get("applicable_available_count", 0)
+            if avail is None:
+                avail = rc.get("available_count", 0)
+
+            if avail > 0:
+                earliest_exp = None
+                for c in credits_list:
+                    if c.get("status") == "available" and c.get("expires_at"):
+                        exp_str = c.get("expires_at")
+                        if not earliest_exp or exp_str < earliest_exp:
+                            earliest_exp = exp_str
+
+                exp_text = f" • {fmt_expiry(earliest_exp)}" if earliest_exp else ""
+                status_note = " (can apply now)" if app_avail > 0 else ""
+                print(f"   ⚡ Resets: {avail} available{exp_text}{status_note}")
+            else:
+                print(f"   ⚡ Resets: 0")
 
             credits = data.get("credits")
             if isinstance(credits, dict) and credits.get("balance") is not None:
