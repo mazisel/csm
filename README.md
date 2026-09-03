@@ -3,7 +3,7 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)](https://github.com/mazisel/csm)
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.5.0-green.svg)](https://github.com/mazisel/csm)
+[![Version](https://img.shields.io/badge/version-2.6.0-green.svg)](https://github.com/mazisel/csm)
 
 A powerful, safe, cross-platform **Multi-Account Switcher & Real-Time Quota Manager** for OpenAI Codex on **macOS**, **Windows**, and **Linux**.
 
@@ -19,8 +19,11 @@ Easily switch between personal, work, and secondary accounts, monitor 5-hour and
 
 - 🌐 **Cross-Platform:** Works natively on **macOS**, **Windows (PowerShell & CMD)**, and **Linux** with zero external pip dependencies.
 - 🔄 **Zero-Disruption Account Switching:** Switch active Codex accounts in milliseconds without losing project history or session data.
-- 📊 **Live Quota & Rate-Limit Visualizer (`csm status`):** See remaining percentages and reset countdowns for both **5-hour** and **7-day** windows for all your saved accounts.
-- 🏆 **Smart Auto-Pick (`csm pick`):** Automatically evaluates all your accounts and switches to the one with the highest available quota.
+- 🎮 **Interactive Arrow-Key Switcher (`csm use`):** Select accounts interactively using `↑/↓` arrow keys with live status previews.
+- 📊 **Live Quota & Rate-Limit Visualizer (`csm status`):** Modern Cyberpunk cards with smooth progress bar fill animations, reset timers, and reset expiration dates.
+- ⏱️ **Live Watch / Monitor Mode (`csm watch`):** Real-time auto-refreshing dashboard with live countdown ticker and non-blocking exit.
+- ⌨️ **Shell Tab Autocompletion (`csm completion install`):** Tab completion for zsh, bash, fish, and PowerShell.
+- 🏆 **Smart Auto-Pick (`csm pick`):** Automatically evaluates all your accounts concurrently and switches to the healthiest one.
 - 🔐 **Isolated Safe Login:** Uses isolated temporary credential sandboxes during `csm add` to prevent existing refresh tokens from being revoked by OpenAI.
 - 🖥️ **Codex Desktop App Integration:** Automatically restarts the macOS or Windows Codex desktop app to apply the newly switched account immediately.
 - 🚀 **Self-Updating:** Keep `csm` up to date with a single `csm update` command.
@@ -65,7 +68,7 @@ csm status
  ╚██████╗███████║██║ ╚═╝ ██║
   ╚═════╝╚══════╝╚═╝     ╚═╝
 
-  ◆ Codex Account Engine v2.5.0
+  ◆ Codex Account Engine v2.6.0
   Fleet: 4 accounts • ⚡ 2 resets • Active: yaman
   ──────────────────────────────────────────────────────────────
 
@@ -89,14 +92,23 @@ csm status
 
 ### 3. Switch accounts
 ```bash
-# Switch to an account and reload Codex Desktop App:
-csm use work
+# Interactive menu with arrow keys:
+csm use
+
+# Direct switch:
+csm use personal
 
 # Or switch without restarting the Desktop App:
 csm use work --no-restart
 ```
 
-### 4. Automatically switch to the healthiest account
+### 4. Live Monitor (Watch Mode)
+```bash
+csm watch       # Auto-refreshes every 15 seconds (Press Q to exit)
+csm watch 30    # Custom 30-second interval
+```
+
+### 5. Automatically switch to the healthiest account
 ```bash
 csm pick
 ```
@@ -109,13 +121,15 @@ csm pick
 | :--- | :--- |
 | `csm add <name>` | Securely login to a new Codex account and save it. |
 | `csm refresh <name>` | Re-authenticate an existing account without revoking others. |
-| `csm use <name>` | Switch active account and restart Codex Desktop App. |
+| `csm use [name]` | Interactive arrow-key switcher or switch to specified account. |
 | `csm use <name> --no-restart` | Switch account without restarting Codex Desktop App. |
-| `csm status` | Show live 5h & 7d quota percentages, reset countdowns, and balance. |
+| `csm status` | Show live 5h & 7d quota cards, reset timers, and reset expiration dates. |
+| `csm watch [sec]` | Live auto-refreshing monitor dashboard (default: 15s, press Q to exit). |
 | `csm pick` | Automatically select and switch to the account with the most quota. |
 | `csm list` | List all saved accounts and show which one is currently active. |
 | `csm current` | Print the name of the currently active account. |
 | `csm remove <name>` | Delete a saved account from the local store. |
+| `csm completion install` | Install shell autocompletion for `zsh`, `bash`, `fish`, or `powershell`. |
 | `csm update` | Update `csm` directly to the latest version from GitHub. |
 | `csm version` | Display the installed version of `csm`. |
 | `csm help` | Show help and usage instructions. |
@@ -141,7 +155,7 @@ csm update
 - **macOS / Linux:**
   ```bash
   rm -f ~/.local/bin/csm
-  rm -rf ~/.codex-multi
+  rm -rf ~/.codex-multi ~/.zfunc/_csm
   ```
 - **Windows (PowerShell):**
   ```powershell
@@ -153,7 +167,7 @@ csm update
 
 ## 🇹🇷 Türkçe Açıklama
 
-`csm`, **macOS**, **Windows** ve **Linux** üzerinde OpenAI Codex için geliştirilmiş çoklu hesap geçiş ve canlı kota takip yöneticisidir.
+`csm`, **macOS**, **Windows** ve **Linux** üzerinde OpenAI Codex için geliştirilmiş çoklu hesap geçiş, canlı kota takip ve izleme yöneticisidir.
 
 ### Kurulum
 - **macOS / Linux:** `curl -fsSL https://raw.githubusercontent.com/mazisel/csm/main/install.sh | bash`
@@ -162,8 +176,10 @@ csm update
 ### Temel Komutlar
 - **Hesap Ekle:** `csm add hesap_adi`
 - **Kotaları Görüntüle:** `csm status`
-- **Hesap Değiştir:** `csm use hesap_adi`
+- **Canlı İzleme (Watch):** `csm watch` (veya `csm watch 30`)
+- **Hesap Değiştir:** `csm use` (ok tuşlarıyla) veya `csm use hesap_adi`
 - **En Yüksek Kotalı Hesaba Geç:** `csm pick`
+- **Tab Tamamlamayı Kur:** `csm completion install`
 - **Güncelle:** `csm update`
 
 ---

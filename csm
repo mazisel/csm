@@ -17,6 +17,7 @@ import tempfile
 import platform
 import subprocess
 import re
+import select
 import concurrent.futures
 from datetime import datetime
 from pathlib import Path
@@ -27,7 +28,7 @@ if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
 if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-VERSION = "2.5.0"
+VERSION = "2.6.0"
 APP_NAME = "Codex"
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 STORE_DIR = Path.home() / ".codex-multi"
@@ -191,18 +192,21 @@ def usage():
   {C_GREEN}csm use [name]{RESET}          Interactive switcher or switch to specified account
   {C_GREEN}csm pick{RESET}                Auto-evaluate & activate the account with highest quota
   {C_GREEN}csm status{RESET}              Live dashboard of 5h/7d quotas, reset timers & reset bank
+  {C_GREEN}csm watch [sec]{RESET}         Live auto-refreshing monitor dashboard (default: 15s)
   {C_GREEN}csm list{RESET}                List all saved accounts
   {C_GREEN}csm current{RESET}             Show active account name
   {C_GREEN}csm remove <name>{RESET}       Delete a saved account
+  {C_GREEN}csm completion install{RESET}  Install shell autocompletion for zsh/bash/fish/powershell
   {C_GREEN}csm update{RESET}              Update csm to latest release from GitHub
   {C_GREEN}csm version{RESET}             Display version info
   {C_GREEN}csm help{RESET}                Show this manual
 
 {BOLD}Examples:{RESET}
   csm status
+  csm watch
   csm use
   csm pick
-  csm add work""")
+  csm completion install""")
 
 def b64url_decode(s: str) -> bytes:
     s += "=" * (-len(s) % 4)
@@ -276,7 +280,7 @@ def isolated_login(name: str):
         config_file = tmp_dir / "config.toml"
         config_file.write_text('cli_auth_credentials_store = "file"\n', encoding="utf-8")
 
-        print(f"\n🔐 {C_BOLD}Opening isolated Codex login for '{name}'...{RESET}")
+        print(f"\n🔐 {BOLD}Opening isolated Codex login for '{name}'...{RESET}")
         print(f"   {DIM}Existing credentials in {CODEX_HOME / 'auth.json'} are protected.{RESET}\n")
 
         env = os.environ.copy()
@@ -406,10 +410,10 @@ def fetch_account_data(path: Path):
     except Exception as e:
         return (name, None, None, str(e))
 
-def render_card(name: str, plan: str, is_active: bool, p_left: float, s_left: float, p_reset: str, s_reset: str, resets_str: str = "", credits_str: str = ""):
+def render_card(name: str, plan: str, is_active: bool, p_left: float, s_left: float, p_reset: str, s_reset: str, resets_str: str = "", credits_str: str = "", animate: bool = True):
     width = 68
     dash = "─"
-    is_tty = sys.stdout.isatty()
+    is_tty = sys.stdout.isatty() and animate
     
     if is_active:
         border_col = C_CYAN
@@ -471,6 +475,113 @@ def render_card(name: str, plan: str, is_active: bool, p_left: float, s_left: fl
         
     print(f"{border_col}╰{dash * (width - 2)}╯{RESET}\n")
 
+def fetch_all_accounts_data(files: list, is_tty: bool, status_msg: str = "Checking Codex quotas"):
+    results = {}
+    done_count = 0
+    spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(files)) as executor:
+        futures = {executor.submit(fetch_account_data, p): p for p in files}
+        spin_idx = 0
+        while not all(f.done() for f in futures):
+            done_count = sum(1 for f in futures if f.done())
+            if is_tty:
+                spin = spinner[spin_idx % len(spinner)]
+                sys.stdout.write(f"\r\033[K  {C_CYAN}{spin}{RESET}  {BOLD}{status_msg}...{RESET} {DIM}({done_count}/{len(files)}){RESET}")
+                sys.stdout.flush()
+            time.sleep(0.045)
+            spin_idx += 1
+
+        for f in futures:
+            name, usage_data, reset_data, err = f.result()
+            results[name] = (usage_data, reset_data, err)
+
+    if is_tty:
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
+        
+    return results
+
+def render_dashboard(results: dict, files: list, active: str, animate: bool = True):
+    total_resets = 0
+    for name, (_, reset_data, _) in results.items():
+        if isinstance(reset_data, dict):
+            total_resets += reset_data.get("available_count", 0)
+
+    print_banner(len(files), total_resets, active)
+
+    rows = []
+    for path in files:
+        name = path.stem
+        is_active = (name == active)
+        usage_data, reset_data, err = results.get(name, (None, None, None))
+        
+        if err or not usage_data:
+            border_col = C_SURFACE
+            print(f"{border_col}╭─ [ {name} ]{'─' * (58 - len(name))}─╮{RESET}")
+            print(f"{border_col}│{RESET}  {C_RED}❌ Could not retrieve usage: {err}{RESET}")
+            print(f"{border_col}╰{'─' * 60}╯{RESET}\n")
+            continue
+
+        rl = usage_data.get("rate_limit") or {}
+        pw = rl.get("primary_window") or {}
+        sw = rl.get("secondary_window") or {}
+
+        p_used = float(pw.get("used_percent", 0))
+        s_used = float(sw.get("used_percent", 0))
+        p_left = max(0.0, 100.0 - p_used)
+        s_left = max(0.0, 100.0 - s_used)
+        plan = usage_data.get("plan_type") or "plus"
+
+        score = min(p_left, s_left)
+        rows.append((score, p_left, s_left, name))
+
+        credits_list = reset_data.get("credits", []) if isinstance(reset_data, dict) else []
+        avail = reset_data.get("available_count") if isinstance(reset_data, dict) else None
+        rc = usage_data.get("rate_limit_reset_credits") or {}
+        app_avail = rc.get("applicable_available_count", 0)
+        if avail is None:
+            avail = rc.get("available_count", 0)
+
+        resets_str = ""
+        if avail > 0:
+            earliest_exp = None
+            for c in credits_list:
+                if c.get("status") == "available" and c.get("expires_at"):
+                    exp_str = c.get("expires_at")
+                    if not earliest_exp or exp_str < earliest_exp:
+                        earliest_exp = exp_str
+
+            exp_text = f" {DIM}• {fmt_expiry(earliest_exp)}{RESET}" if earliest_exp else ""
+            status_note = f" {C_GREEN}(can apply now){RESET}" if app_avail > 0 else ""
+            resets_str = f"{C_YELLOW}⚡ Resets:{RESET} {BOLD}{avail} available{RESET}{exp_text}{status_note}"
+        else:
+            resets_str = f"{DIM}⚡ Resets: 0{RESET}"
+
+        credits_str = ""
+        credits_obj = usage_data.get("credits")
+        if isinstance(credits_obj, dict) and credits_obj.get("balance") is not None:
+            bal = str(credits_obj.get("balance"))
+            if bal != "0":
+                credits_str = f"{C_YELLOW}💵 Credits:{RESET} ${bal}"
+
+        render_card(name, plan, is_active, p_left, s_left, reset_in(pw), reset_in(sw), resets_str, credits_str, animate=animate)
+
+    if rows:
+        best = max(rows, key=lambda x: (x[0], x[1] + x[2]))
+        width = 68
+        card_top = f"{C_GREEN}╭─ [ 🏆 RECOMMENDED SWITCH ]{'─' * (width - 29)}─╮{RESET}"
+        content = f"  {BOLD}{C_WHITE}{best[3]}{RESET} {DIM}→ {C_GREEN}{best[1]:.1f}%{RESET}{DIM} 5h / {C_GREEN}{best[2]:.1f}%{RESET}{DIM} 7d capacity available{RESET}"
+        pad = width - len(strip_ansi(content)) - 2
+        card_bot = f"{C_GREEN}╰{'─' * (width - 2)}╯{RESET}"
+        
+        print(card_top)
+        print(f"{C_GREEN}│{RESET}{content}{' ' * max(0, pad)}{C_GREEN}│{RESET}")
+        action_line = f"  {DIM}Run {C_CYAN}csm use {best[3]}{RESET}{DIM} or {C_CYAN}csm pick{RESET}{DIM} to activate.{RESET}"
+        pad_act = width - len(strip_ansi(action_line)) - 2
+        print(f"{C_GREEN}│{RESET}{action_line}{' ' * max(0, pad_act)}{C_GREEN}│{RESET}")
+        print(card_bot + "\n")
+
 def status_accounts():
     save_active_auth()
     active = get_active_account()
@@ -484,116 +595,93 @@ def status_accounts():
         return
 
     is_tty = sys.stdout.isatty()
-    results = {}
-    done_count = 0
-    spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-
     if is_tty:
         sys.stdout.write("\033[?25l")
         sys.stdout.flush()
 
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(files)) as executor:
-            futures = {executor.submit(fetch_account_data, p): p for p in files}
-            spin_idx = 0
-            while not all(f.done() for f in futures):
-                done_count = sum(1 for f in futures if f.done())
-                if is_tty:
-                    spin = spinner[spin_idx % len(spinner)]
-                    sys.stdout.write(f"\r\033[K  {C_CYAN}{spin}{RESET}  {BOLD}Checking Codex quotas across {len(files)} accounts...{RESET} {DIM}({done_count}/{len(files)}){RESET}")
-                    sys.stdout.flush()
-                time.sleep(0.045)
-                spin_idx += 1
-
-            for f in futures:
-                name, usage_data, reset_data, err = f.result()
-                results[name] = (usage_data, reset_data, err)
-
+        results = fetch_all_accounts_data(files, is_tty, f"Checking Codex quotas across {len(files)} accounts")
+        render_dashboard(results, files, active, animate=True)
+    finally:
         if is_tty:
-            sys.stdout.write("\r\033[K")
+            sys.stdout.write("\033[?25h")
             sys.stdout.flush()
 
-        # Aggregate total resets
-        total_resets = 0
-        for name, (_, reset_data, _) in results.items():
-            if isinstance(reset_data, dict):
-                total_resets += reset_data.get("available_count", 0)
+def check_quit_key(timeout_sec: float = 1.0) -> bool:
+    if os.name == "nt":
+        import msvcrt
+        start = time.time()
+        while time.time() - start < timeout_sec:
+            if msvcrt.kbhit():
+                ch = msvcrt.getch()
+                if ch in (b"q", b"Q", b"\x03", b"\x1b"):
+                    return True
+            time.sleep(0.05)
+        return False
+    else:
+        import termios, tty
+        if not sys.stdin.isatty():
+            time.sleep(timeout_sec)
+            return False
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            rlist, _, _ = select.select([sys.stdin], [], [], timeout_sec)
+            if rlist:
+                ch = sys.stdin.read(1)
+                if ch in ("q", "Q", "\x03", "\x1b"):
+                    return True
+            return False
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
-        # Print Cyberpunk Header Banner
-        print_banner(len(files), total_resets, active)
+def watch_accounts(interval: int = 15):
+    save_active_auth()
+    try:
+        files = sorted(ACCOUNTS_DIR.glob("*.json"))
+    except Exception as e:
+        die(f"Could not access accounts directory: {e}")
 
-        rows = []
-        for path in files:
-            name = path.stem
-            is_active = (name == active)
-            usage_data, reset_data, err = results.get(name, (None, None, None))
-            
-            if err or not usage_data:
-                border_col = C_SURFACE
-                print(f"{border_col}╭─ [ {name} ]{'─' * (58 - len(name))}─╮{RESET}")
-                print(f"{border_col}│{RESET}  {C_RED}❌ Could not retrieve usage: {err}{RESET}")
-                print(f"{border_col}╰{'─' * 60}╯{RESET}\n")
-                continue
+    if not files:
+        die("No saved accounts found. Run: csm add <name>")
 
-            rl = usage_data.get("rate_limit") or {}
-            pw = rl.get("primary_window") or {}
-            sw = rl.get("secondary_window") or {}
+    is_tty = sys.stdout.isatty()
+    if is_tty:
+        sys.stdout.write("\033[?25l")
+        sys.stdout.flush()
 
-            p_used = float(pw.get("used_percent", 0))
-            s_used = float(sw.get("used_percent", 0))
-            p_left = max(0.0, 100.0 - p_used)
-            s_left = max(0.0, 100.0 - s_used)
-            plan = usage_data.get("plan_type") or "plus"
+    try:
+        first_run = True
+        while True:
+            active = get_active_account()
+            if is_tty:
+                sys.stdout.write("\033[2J\033[H") # Clear screen & home cursor
+                sys.stdout.flush()
 
-            score = min(p_left, s_left)
-            rows.append((score, p_left, s_left, name))
+            results = fetch_all_accounts_data(files, is_tty, f"Refreshing Codex quotas across {len(files)} accounts")
+            if is_tty:
+                sys.stdout.write("\033[2J\033[H")
+                sys.stdout.flush()
 
-            # Resets & Expiry
-            credits_list = reset_data.get("credits", []) if isinstance(reset_data, dict) else []
-            avail = reset_data.get("available_count") if isinstance(reset_data, dict) else None
-            rc = usage_data.get("rate_limit_reset_credits") or {}
-            app_avail = rc.get("applicable_available_count", 0)
-            if avail is None:
-                avail = rc.get("available_count", 0)
+            render_dashboard(results, files, active, animate=first_run)
+            first_run = False
 
-            resets_str = ""
-            if avail > 0:
-                earliest_exp = None
-                for c in credits_list:
-                    if c.get("status") == "available" and c.get("expires_at"):
-                        exp_str = c.get("expires_at")
-                        if not earliest_exp or exp_str < earliest_exp:
-                            earliest_exp = exp_str
-
-                exp_text = f" {DIM}• {fmt_expiry(earliest_exp)}{RESET}" if earliest_exp else ""
-                status_note = f" {C_GREEN}(can apply now){RESET}" if app_avail > 0 else ""
-                resets_str = f"{C_YELLOW}⚡ Resets:{RESET} {BOLD}{avail} available{RESET}{exp_text}{status_note}"
-            else:
-                resets_str = f"{DIM}⚡ Resets: 0{RESET}"
-
-            credits_str = ""
-            credits_obj = usage_data.get("credits")
-            if isinstance(credits_obj, dict) and credits_obj.get("balance") is not None:
-                bal = str(credits_obj.get("balance"))
-                if bal != "0":
-                    credits_str = f"{C_YELLOW}💵 Credits:{RESET} ${bal}"
-
-            render_card(name, plan, is_active, p_left, s_left, reset_in(pw), reset_in(sw), resets_str, credits_str)
-
-        if rows:
-            best = max(rows, key=lambda x: (x[0], x[1] + x[2]))
-            width = 68
-            card_top = f"{C_GREEN}╭─ [ 🏆 RECOMMENDED SWITCH ]{'─' * (width - 29)}─╮{RESET}"
-            content = f"  {BOLD}{C_WHITE}{best[3]}{RESET} {DIM}→ {C_GREEN}{best[1]:.1f}%{RESET}{DIM} 5h / {C_GREEN}{best[2]:.1f}%{RESET}{DIM} 7d capacity available{RESET}"
-            pad = width - len(strip_ansi(content)) - 2
-            card_bot = f"{C_GREEN}╰{'─' * (width - 2)}╯{RESET}"
-            
-            print(card_top)
-            print(f"{C_GREEN}│{RESET}{content}{' ' * max(0, pad)}{C_GREEN}│{RESET}")
-            action_line = f"  {DIM}Run {C_CYAN}csm use {best[3]}{RESET}{DIM} or {C_CYAN}csm pick{RESET}{DIM} to activate.{RESET}"
-            pad_act = width - len(strip_ansi(action_line)) - 2
-            print(f"{C_GREEN}│{RESET}{action_line}{' ' * max(0, pad_act)}{C_GREEN}│{RESET}")
-            print(card_bot + "\n")
+            # Live Countdown Loop
+            for remaining in range(interval, 0, -1):
+                if is_tty:
+                    sys.stdout.write(f"\r\033[K  {C_CYAN}⟳{RESET} {BOLD}Auto-refreshing in {remaining}s...{RESET} {DIM}(Press {C_WHITE}Q{RESET}{DIM} or {C_WHITE}Ctrl+C{RESET}{DIM} to exit){RESET}")
+                    sys.stdout.flush()
+                
+                if check_quit_key(1.0):
+                    if is_tty:
+                        sys.stdout.write("\r\033[K\n")
+                    print(f"  {DIM}Watch mode stopped.{RESET}\n")
+                    return
+    except KeyboardInterrupt:
+        if is_tty:
+            sys.stdout.write("\r\033[K\n")
+        print(f"  {DIM}Watch mode stopped.{RESET}\n")
     finally:
         if is_tty:
             sys.stdout.write("\033[?25h")
@@ -682,7 +770,6 @@ def interactive_picker():
                 print(f"\n{DIM}Canceled.{RESET}")
                 break
 
-            # Move cursor up to redraw
             sys.stdout.write(f"\033[{len(account_names)}A")
             sys.stdout.flush()
     finally:
@@ -700,38 +787,22 @@ def pick_account():
         die("No saved accounts found. First run: csm add <name>")
 
     is_tty = sys.stdout.isatty()
-    spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
     if is_tty:
         sys.stdout.write("\033[?25l")
         sys.stdout.flush()
 
     results = []
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(files)) as executor:
-            futures = {executor.submit(fetch_account_data, p): p for p in files}
-            spin_idx = 0
-            while not all(f.done() for f in futures):
-                if is_tty:
-                    spin = spinner[spin_idx % len(spinner)]
-                    sys.stdout.write(f"\r\033[K  {C_CYAN}{spin}{RESET}  {BOLD}Evaluating healthiest Codex account across {len(files)} accounts...{RESET}")
-                    sys.stdout.flush()
-                time.sleep(0.045)
-                spin_idx += 1
-
-            for f in futures:
-                name, usage_data, _, err = f.result()
-                if usage_data and not err:
-                    rl = usage_data.get("rate_limit") or {}
-                    pw = rl.get("primary_window") or {}
-                    sw = rl.get("secondary_window") or {}
-                    pleft = max(0.0, 100 - float(pw.get("used_percent", 0)))
-                    sleft = max(0.0, 100 - float(sw.get("used_percent", 0)))
-                    score = (min(pleft, sleft), pleft + sleft)
-                    results.append((score, pleft, sleft, name))
-
-        if is_tty:
-            sys.stdout.write("\r\033[K")
-            sys.stdout.flush()
+        fetch_map = fetch_all_accounts_data(files, is_tty, f"Evaluating healthiest Codex account across {len(files)} accounts")
+        for name, (usage_data, _, err) in fetch_map.items():
+            if usage_data and not err:
+                rl = usage_data.get("rate_limit") or {}
+                pw = rl.get("primary_window") or {}
+                sw = rl.get("secondary_window") or {}
+                pleft = max(0.0, 100 - float(pw.get("used_percent", 0)))
+                sleft = max(0.0, 100 - float(sw.get("used_percent", 0)))
+                score = (min(pleft, sleft), pleft + sleft)
+                results.append((score, pleft, sleft, name))
     finally:
         if is_tty:
             sys.stdout.write("\033[?25h")
@@ -760,6 +831,11 @@ def list_accounts():
             print(f"  {DIM}○{RESET} {C_TEXT}{name}{RESET}")
     print()
 
+def list_raw_accounts():
+    files = sorted(ACCOUNTS_DIR.glob("*.json"))
+    for f in files:
+        print(f.stem)
+
 def remove_account(name: str):
     target = ACCOUNTS_DIR / f"{name}.json"
     if not target.exists():
@@ -771,6 +847,171 @@ def remove_account(name: str):
         except Exception:
             pass
     print(f"{C_GREEN}✅ Account '{name}' removed.{RESET}")
+
+def get_completion_script(shell: str) -> str:
+    if shell == "zsh":
+        return """#compdef csm
+
+_csm() {
+    local curcontext="$curcontext" state line
+    typeset -A opt_args
+
+    _arguments -C \\
+        '1: :->command' \\
+        '*: :->args'
+
+    case $state in
+        command)
+            local -a subcommands
+            subcommands=(
+                'add:Login to a Codex account safely'
+                'use:Switch active Codex account'
+                'switch:Interactive switcher or switch to specified account'
+                'pick:Auto-evaluate & switch to healthiest account'
+                'status:Live dashboard of rate limits & quota'
+                'watch:Live auto-refreshing monitor dashboard'
+                'list:List all saved accounts'
+                'current:Show active account name'
+                'refresh:Re-authenticate an account'
+                'remove:Delete a saved account'
+                'completion:Install shell autocompletion'
+                'update:Update csm to latest version'
+                'version:Display version info'
+                'help:Show help'
+            )
+            _describe -t subcommands 'csm commands' subcommands
+            ;;
+        args)
+            case $words[2] in
+                use|switch|remove|refresh)
+                    local -a accounts
+                    accounts=(${(f)"$(csm _list_raw 2>/dev/null)"})
+                    _describe -t accounts 'saved accounts' accounts
+                    ;;
+                completion)
+                    local -a subopts
+                    subopts=('install:Install autocompletion automatically' 'zsh:Print zsh script' 'bash:Print bash script' 'fish:Print fish script' 'powershell:Print powershell script')
+                    _describe -t subopts 'completion options' subopts
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+compdef _csm csm
+"""
+    elif shell == "bash":
+        return """_csm_completions() {
+    local cur prev commands
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    commands="add use switch pick status watch list current refresh remove update completion version help"
+
+    if [ $COMP_CWORD -eq 1 ]; then
+        COMPREPLY=($(compgen -W "${commands}" -- "${cur}"))
+        return 0
+    fi
+
+    case "${prev}" in
+        use|switch|remove|refresh)
+            local accounts
+            accounts=$(csm _list_raw 2>/dev/null)
+            COMPREPLY=($(compgen -W "${accounts}" -- "${cur}"))
+            return 0
+            ;;
+        completion)
+            COMPREPLY=($(compgen -W "install zsh bash fish powershell" -- "${cur}"))
+            return 0
+            ;;
+    esac
+}
+complete -F _csm_completions csm
+"""
+    elif shell == "fish":
+        return """function __fish_csm_accounts
+    csm _list_raw 2>/dev/null
+end
+
+complete -c csm -f
+complete -c csm -n "__fish_use_subcommand" -a "add use switch pick status watch list current refresh remove update completion version help"
+complete -c csm -n "__fish_seen_subcommand_from use switch remove refresh" -a "(__fish_csm_accounts)"
+complete -c csm -n "__fish_seen_subcommand_from completion" -a "install zsh bash fish powershell"
+"""
+    elif shell == "powershell":
+        return """Register-ArgumentCompleter -Native -CommandName csm -ScriptBlock {
+    param($wordToComplete, $commandAst, $cursorPosition)
+    $commands = @('add','use','switch','pick','status','watch','list','current','refresh','remove','update','completion','version','help')
+    $tokens = $commandAst.Tokens
+    if ($tokens.Count -le 2) {
+        $commands | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
+            [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+        }
+    } else {
+        $prev = $tokens[1].Value
+        if ($prev -in @('use','switch','remove','refresh')) {
+            $accounts = csm _list_raw
+            $accounts | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
+                [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+            }
+        }
+    }
+}
+"""
+    return ""
+
+def install_completion():
+    sh = os.environ.get("SHELL", "")
+    shell_name = "zsh" if "zsh" in sh else ("bash" if "bash" in sh else ("fish" if "fish" in sh else ""))
+    if sys.platform == "win32":
+        shell_name = "powershell"
+
+    if not shell_name:
+        shell_name = "zsh"
+
+    print(f"\n⚙️  {BOLD}Installing autocompletion for {C_CYAN}{shell_name}{RESET}...")
+
+    home = Path.home()
+    if shell_name == "zsh":
+        zfunc_dir = home / ".zfunc"
+        zfunc_dir.mkdir(parents=True, exist_ok=True)
+        comp_file = zfunc_dir / "_csm"
+        comp_file.write_text(get_completion_script("zsh"), encoding="utf-8")
+
+        zshrc = home / ".zshrc"
+        rc_lines = zshrc.read_text(encoding="utf-8") if zshrc.exists() else ""
+        additions = []
+        if "fpath=(~/.zfunc $fpath)" not in rc_lines and "fpath=(~/.zfunc" not in rc_lines:
+            additions.append('fpath=(~/.zfunc $fpath)')
+        if "autoload -Uz compinit" not in rc_lines:
+            additions.append('autoload -Uz compinit && compinit')
+            
+        if additions:
+            with zshrc.open("a", encoding="utf-8") as f:
+                f.write("\n# csm autocompletion\n" + "\n".join(additions) + "\n")
+
+        print(f"{C_GREEN}✅ Zsh completion script installed to {comp_file}!{RESET}")
+        print(f"👉 Please reload your terminal or run: {BOLD}source ~/.zshrc{RESET}\n")
+
+    elif shell_name == "bash":
+        bashrc = home / ".bashrc"
+        snippet = '\neval "$(csm completion bash)"\n'
+        rc_lines = bashrc.read_text(encoding="utf-8") if bashrc.exists() else ""
+        if "csm completion bash" not in rc_lines:
+            with bashrc.open("a", encoding="utf-8") as f:
+                f.write(snippet)
+        print(f"{C_GREEN}✅ Bash completion added to ~/.bashrc!{RESET}")
+        print(f"👉 Please reload your terminal or run: {BOLD}source ~/.bashrc{RESET}\n")
+
+    elif shell_name == "fish":
+        fish_dir = home / ".config" / "fish" / "completions"
+        fish_dir.mkdir(parents=True, exist_ok=True)
+        comp_file = fish_dir / "csm.fish"
+        comp_file.write_text(get_completion_script("fish"), encoding="utf-8")
+        print(f"{C_GREEN}✅ Fish completion installed to {comp_file}!{RESET}\n")
+
+    elif shell_name == "powershell":
+        print(f"{C_GREEN}✅ Add the following to your PowerShell $PROFILE:{RESET}\n")
+        print(get_completion_script("powershell"))
 
 def update_csm():
     info("Checking for updates and downloading latest csm...")
@@ -825,7 +1066,6 @@ def main():
 
     elif cmd in ("use", "switch"):
         if len(args) == 1:
-            # Interactive mode when no name provided
             interactive_picker()
         else:
             name = safe_name(args[1])
@@ -835,8 +1075,20 @@ def main():
     elif cmd == "list":
         list_accounts()
 
+    elif cmd == "_list_raw":
+        list_raw_accounts()
+
     elif cmd == "status":
         status_accounts()
+
+    elif cmd == "watch":
+        sec = 15
+        if len(args) > 1:
+            try:
+                sec = max(2, int(args[1]))
+            except ValueError:
+                pass
+        watch_accounts(interval=sec)
 
     elif cmd == "pick":
         pick_account()
@@ -850,6 +1102,18 @@ def main():
             die("Usage: csm remove <name>")
         name = safe_name(args[1])
         remove_account(name)
+
+    elif cmd == "completion":
+        if len(args) > 1:
+            sub = args[1].lower()
+            if sub == "install":
+                install_completion()
+            elif sub in ("zsh", "bash", "fish", "powershell"):
+                print(get_completion_script(sub))
+            else:
+                die("Usage: csm completion [install|zsh|bash|fish|powershell]")
+        else:
+            install_completion()
 
     elif cmd == "update":
         update_csm()
