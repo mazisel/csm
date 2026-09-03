@@ -27,7 +27,7 @@ if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
 if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-VERSION = "2.4.0"
+VERSION = "2.5.0"
 APP_NAME = "Codex"
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 STORE_DIR = Path.home() / ".codex-multi"
@@ -39,22 +39,36 @@ RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credi
 AUTH_URL = "https://auth.openai.com/oauth/token"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 
-# ANSI Colors
-C_RESET = "\033[0m"
-C_BOLD = "\033[1m"
-C_DIM = "\033[2m"
-C_CYAN = "\033[36m"
-C_BRIGHT_CYAN = "\033[96m"
-C_GREEN = "\033[32m"
-C_BRIGHT_GREEN = "\033[92m"
-C_YELLOW = "\033[33m"
-C_BRIGHT_YELLOW = "\033[93m"
-C_RED = "\033[31m"
-C_BRIGHT_RED = "\033[91m"
-C_MAGENTA = "\033[35m"
-C_BRIGHT_MAGENTA = "\033[95m"
-C_GRAY = "\033[90m"
-C_WHITE = "\033[97m"
+# ANSI Colors & Styling
+def rgb(r, g, b): return f"\033[38;2;{r};{g};{b}m"
+def rgb_bg(r, g, b): return f"\033[48;2;{r};{g};{b}m"
+
+RESET = "\033[0m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+ITALIC = "\033[3m"
+UNDERLINE = "\033[4m"
+
+# Catppuccin / Neon Palette
+C_MAUVE   = rgb(203, 166, 247)
+C_LAVENDER= rgb(180, 190, 254)
+C_BLUE    = rgb(137, 180, 250)
+C_CYAN    = rgb(137, 220, 235)
+C_TEAL    = rgb(148, 226, 213)
+C_GREEN   = rgb(166, 227, 161)
+C_YELLOW  = rgb(249, 226, 175)
+C_PEACH   = rgb(250, 179, 135)
+C_RED     = rgb(243, 139, 168)
+C_TEXT    = rgb(205, 214, 244)
+C_SUBTEXT = rgb(166, 173, 200)
+C_GRAY    = rgb(108, 112, 134)
+C_SURFACE = rgb(69, 71, 90)
+C_MANTLE  = rgb(30, 30, 46)
+C_WHITE   = rgb(255, 255, 255)
+C_BRIGHT_CYAN = rgb(137, 220, 235)
+
+def strip_ansi(s: str) -> str:
+    return re.sub(r"\033\[[0-9;]*m", "", s)
 
 def init_store():
     try:
@@ -80,145 +94,115 @@ def safe_chmod(path: Path, mode: int):
             pass
 
 def die(msg: str):
-    print(f"❌ {msg}", file=sys.stderr)
+    print(f"\n{C_RED}❌ {msg}{RESET}", file=sys.stderr)
     sys.exit(1)
 
 def info(msg: str):
-    print(f"→ {msg}")
-
-def usage():
-    print(f"""csm v{VERSION} — Codex Multi-Account Switcher & Quota Manager
-
-Commands:
-  csm add <name>       Login to an account safely and save it
-  csm refresh <name>   Re-login to an existing account safely
-  csm use <name>       Switch Codex App to that account and restart it
-  csm use <name> --no-restart
-                       Switch auth without restarting Codex App
-  csm list             List saved accounts
-  csm status           Show remaining 5h/weekly limits for all accounts
-  csm pick             Pick the healthiest account and switch to it
-  csm current          Show active account
-  csm remove <name>    Remove a saved account
-  csm update           Update csm to the latest version from GitHub
-  csm version          Show csm version
-  csm help             Show this help
-
-Examples:
-  csm add personal
-  csm add work
-  csm status
-  csm pick
-  csm use personal""")
+    print(f"{C_CYAN}→{RESET} {msg}")
 
 def safe_name(name: str) -> str:
     if not re.match(r"^[A-Za-z0-9._-]+$", name):
         die("Account name may only contain letters, numbers, dot, underscore, and dash.")
     return name
 
-def save_active_auth():
-    auth_file = CODEX_HOME / "auth.json"
-    if ACTIVE_FILE.exists() and auth_file.exists():
-        try:
-            active = ACTIVE_FILE.read_text(encoding="utf-8").strip()
-            target = ACCOUNTS_DIR / f"{active}.json"
-            if active and target.exists():
-                shutil.copy2(auth_file, target)
-                safe_chmod(target, 0o600)
-        except Exception:
-            pass
-
-def isolated_login(name: str):
-    codex_bin = shutil.which("codex")
-    if not codex_bin:
-        die("Codex CLI ('codex') not found in PATH. Please make sure Codex CLI is installed.")
-
-    tmp_dir = Path(tempfile.mkdtemp(prefix="csm-login-"))
+def fmt_seconds(sec) -> str:
+    if sec is None:
+        return "?"
     try:
-        config_file = tmp_dir / "config.toml"
-        config_file.write_text('cli_auth_credentials_store = "file"\n', encoding="utf-8")
+        sec = max(0, int(sec))
+    except Exception:
+        return "?"
+    d, rem = divmod(sec, 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    out = []
+    if d: out.append(f"{d}d")
+    if h: out.append(f"{h}h")
+    if m and not d: out.append(f"{m}m")
+    return " ".join(out) if out else "<1m"
 
-        print(f"\n🔐 Opening isolated Codex login for '{name}'...")
-        print(f"   Existing credentials in {CODEX_HOME / 'auth.json'} are protected from revocation.\n")
+def fmt_expiry(exp_iso: str) -> str:
+    if not exp_iso:
+        return ""
+    try:
+        if exp_iso.endswith("Z"):
+            exp_clean = exp_iso[:-1] + "+00:00"
+        else:
+            exp_clean = exp_iso
+        dt = datetime.fromisoformat(exp_clean)
+        formatted_date = dt.strftime("%d %b")
+        seconds_left = max(0, int(dt.timestamp() - time.time()))
+        rel = fmt_seconds(seconds_left)
+        return f"expires {formatted_date} ({rel} left)"
+    except Exception:
+        return f"expires {exp_iso[:10]}"
 
-        env = os.environ.copy()
-        env["CODEX_HOME"] = str(tmp_dir)
+def reset_in(w: dict) -> str:
+    if not w:
+        return "?"
+    if w.get("reset_after_seconds") is not None:
+        return fmt_seconds(w["reset_after_seconds"])
+    if w.get("reset_at") is not None:
+        return fmt_seconds(w["reset_at"] - int(time.time()))
+    return "?"
 
-        # Run codex login
-        res = subprocess.run([codex_bin, "login"], env=env)
-        if res.returncode != 0:
-            die("Login was canceled or failed.")
-
-        tmp_auth = tmp_dir / "auth.json"
-        if not tmp_auth.exists():
-            die("Login completed but auth.json was not found in temp directory.")
-
-        target = ACCOUNTS_DIR / f"{name}.json"
-        shutil.copy2(tmp_auth, target)
-        safe_chmod(target, 0o600)
-        print(f"✅ Account '{name}' successfully saved!")
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-def restart_codex():
-    info("Restarting Codex / ChatGPT App...")
-    sys_plat = platform.system()
-    if sys_plat == "Darwin":
-        # Try quitting by Bundle ID, then app names
-        subprocess.run(["/usr/bin/osascript", "-e", 'tell application id "com.openai.codex" to quit'], capture_output=True)
-        subprocess.run(["/usr/bin/osascript", "-e", 'tell application "ChatGPT" to quit'], capture_output=True)
-        subprocess.run(["/usr/bin/osascript", "-e", 'tell application "Codex" to quit'], capture_output=True)
-        subprocess.run(["/usr/bin/pkill", "-f", "codex.*app-server"], capture_output=True)
-        time.sleep(1.5)
-        
-        # Re-open by bundle ID or fallback to app names
-        res = subprocess.run(["/usr/bin/open", "-b", "com.openai.codex"], capture_output=True)
-        if res.returncode != 0:
-            res = subprocess.run(["/usr/bin/open", "-a", "ChatGPT"], capture_output=True)
-        if res.returncode != 0:
-            subprocess.run(["/usr/bin/open", "-a", "Codex"], capture_output=True)
-    elif sys_plat == "Windows":
-        subprocess.run(["taskkill", "/IM", "Codex.exe", "/F"], capture_output=True)
-        subprocess.run(["taskkill", "/IM", "ChatGPT.exe", "/F"], capture_output=True)
-        time.sleep(1)
-        try:
-            os.startfile("Codex")
-        except Exception:
-            try:
-                os.startfile("ChatGPT")
-            except Exception:
-                try:
-                    subprocess.Popen(["cmd", "/c", "start", "codex"], shell=True)
-                except Exception as e:
-                    print(f"⚠️  Could not automatically restart Desktop App: {e}")
-    elif sys_plat == "Linux":
-        subprocess.run(["killall", "codex"], capture_output=True)
-        time.sleep(1)
-        try:
-            subprocess.Popen(["codex"], start_new_session=True)
-        except Exception:
-            pass
-
-def switch_account(name: str, restart: bool = True):
-    acc_file = ACCOUNTS_DIR / f"{name}.json"
-    if not acc_file.exists():
-        die(f"No saved account named '{name}'. Run: csm add {name}")
-
-    CODEX_HOME.mkdir(parents=True, exist_ok=True)
-    save_active_auth()
-
-    target_auth = CODEX_HOME / "auth.json"
-    shutil.copy2(acc_file, target_auth)
-    safe_chmod(target_auth, 0o600)
-    ACTIVE_FILE.write_text(name, encoding="utf-8")
-
-    print(f"✅ Active Codex account: {name}")
-    print("   Project and session history under ~/.codex were not changed.")
-
-    if restart:
-        restart_codex()
+def progress_bar(left_pct: float, anim_ratio: float = 1.0) -> str:
+    val = max(0.0, min(100.0, left_pct * anim_ratio))
+    filled = round(val / 5)
+    unfilled = 20 - filled
+    
+    if left_pct >= 50:
+        fill_col = C_GREEN
+    elif left_pct >= 20:
+        fill_col = C_YELLOW
     else:
-        print("   Restart Codex App manually to load the new account.")
+        fill_col = C_RED
+        
+    blocks = "█" * filled
+    spaces = "░" * unfilled
+    return f"{fill_col}{blocks}{C_SURFACE}{spaces}{RESET}"
+
+def print_banner(total_accs: int = 0, total_resets: int = 0, active_acc: str = ""):
+    banner = [
+        "  ██████╗███████╗███╗   ███╗",
+        " ██╔════╝██╔════╝████╗ ████║",
+        " ██║     ███████╗██╔████╔██║",
+        " ╚██████╗███████║██║ ╚═╝ ██║",
+        "  ╚═════╝╚══════╝╚═╝     ╚═╝"
+    ]
+    gradient = [C_MAUVE, C_LAVENDER, C_BLUE, C_CYAN, C_GREEN]
+    
+    print()
+    for line, col in zip(banner, gradient):
+        print(f"{col}{BOLD}{line}{RESET}")
+    print()
+    print(f"  {C_CYAN}◆{RESET} {BOLD}{C_TEXT}Codex Account Engine{RESET} {DIM}v{VERSION}{RESET}")
+    if total_accs > 0:
+        act_str = f"{C_GREEN}{active_acc}{RESET}" if active_acc else f"{DIM}(none){RESET}"
+        resets_str = f"{C_YELLOW}⚡ {total_resets} resets{RESET}" if total_resets > 0 else f"{DIM}⚡ 0 resets{RESET}"
+        print(f"  {DIM}Fleet:{RESET} {BOLD}{total_accs}{RESET} accounts {DIM}•{RESET} {resets_str} {DIM}• Active:{RESET} {act_str}")
+    print(f"  {C_SURFACE}{'─' * 62}{RESET}\n")
+
+def usage():
+    print_banner(0, 0, "")
+    print(f"""{BOLD}Commands:{RESET}
+  {C_GREEN}csm add <name>{RESET}          Login to a Codex account safely & isolate credentials
+  {C_GREEN}csm refresh <name>{RESET}      Re-authenticate an account without revoking others
+  {C_GREEN}csm use [name]{RESET}          Interactive switcher or switch to specified account
+  {C_GREEN}csm pick{RESET}                Auto-evaluate & activate the account with highest quota
+  {C_GREEN}csm status{RESET}              Live dashboard of 5h/7d quotas, reset timers & reset bank
+  {C_GREEN}csm list{RESET}                List all saved accounts
+  {C_GREEN}csm current{RESET}             Show active account name
+  {C_GREEN}csm remove <name>{RESET}       Delete a saved account
+  {C_GREEN}csm update{RESET}              Update csm to latest release from GitHub
+  {C_GREEN}csm version{RESET}             Display version info
+  {C_GREEN}csm help{RESET}                Show this manual
+
+{BOLD}Examples:{RESET}
+  csm status
+  csm use
+  csm pick
+  csm add work""")
 
 def b64url_decode(s: str) -> bytes:
     s += "=" * (-len(s) % 4)
@@ -270,62 +254,106 @@ def refresh_auth(auth: dict, path: Path) -> dict:
     safe_chmod(path, 0o600)
     return auth
 
-def fmt_seconds(sec) -> str:
-    if sec is None:
-        return "?"
+def save_active_auth():
+    auth_file = CODEX_HOME / "auth.json"
+    if ACTIVE_FILE.exists() and auth_file.exists():
+        try:
+            active = ACTIVE_FILE.read_text(encoding="utf-8").strip()
+            target = ACCOUNTS_DIR / f"{active}.json"
+            if active and target.exists():
+                shutil.copy2(auth_file, target)
+                safe_chmod(target, 0o600)
+        except Exception:
+            pass
+
+def isolated_login(name: str):
+    codex_bin = shutil.which("codex")
+    if not codex_bin:
+        die("Codex CLI ('codex') not found in PATH. Please make sure Codex CLI is installed.")
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="csm-login-"))
     try:
-        sec = max(0, int(sec))
-    except Exception:
-        return "?"
-    d, rem = divmod(sec, 86400)
-    h, rem = divmod(rem, 3600)
-    m = rem // 60
-    out = []
-    if d: out.append(f"{d}d")
-    if h: out.append(f"{h}h")
-    if m and not d: out.append(f"{m}m")
-    return " ".join(out) if out else "<1m"
+        config_file = tmp_dir / "config.toml"
+        config_file.write_text('cli_auth_credentials_store = "file"\n', encoding="utf-8")
 
-def fmt_expiry(exp_iso: str) -> str:
-    if not exp_iso:
-        return ""
-    try:
-        if exp_iso.endswith("Z"):
-            exp_clean = exp_iso[:-1] + "+00:00"
-        else:
-            exp_clean = exp_iso
-        dt = datetime.fromisoformat(exp_clean)
-        formatted_date = dt.strftime("%d %b")
-        seconds_left = max(0, int(dt.timestamp() - time.time()))
-        rel = fmt_seconds(seconds_left)
-        return f"expires {formatted_date} ({rel} left)"
-    except Exception:
-        return f"expires {exp_iso[:10]}"
+        print(f"\n🔐 {C_BOLD}Opening isolated Codex login for '{name}'...{RESET}")
+        print(f"   {DIM}Existing credentials in {CODEX_HOME / 'auth.json'} are protected.{RESET}\n")
 
-def reset_in(w: dict) -> str:
-    if not w:
-        return "?"
-    if w.get("reset_after_seconds") is not None:
-        return fmt_seconds(w["reset_after_seconds"])
-    if w.get("reset_at") is not None:
-        return fmt_seconds(w["reset_at"] - int(time.time()))
-    return "?"
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(tmp_dir)
 
-def progress_bar(left_pct: float, anim_ratio: float = 1.0) -> str:
-    val = max(0.0, min(100.0, left_pct * anim_ratio))
-    filled = round(val / 5)
-    unfilled = 20 - filled
-    
-    if left_pct >= 50:
-        fill_col = C_BRIGHT_GREEN
-    elif left_pct >= 20:
-        fill_col = C_BRIGHT_YELLOW
-    else:
-        fill_col = C_BRIGHT_RED
+        res = subprocess.run([codex_bin, "login"], env=env)
+        if res.returncode != 0:
+            die("Login was canceled or failed.")
+
+        tmp_auth = tmp_dir / "auth.json"
+        if not tmp_auth.exists():
+            die("Login completed but auth.json was not found in temp directory.")
+
+        target = ACCOUNTS_DIR / f"{name}.json"
+        shutil.copy2(tmp_auth, target)
+        safe_chmod(target, 0o600)
+        print(f"\n{C_GREEN}✅ Account '{name}' successfully saved!{RESET}")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+def restart_codex():
+    info("Reloading Codex / ChatGPT Desktop App...")
+    sys_plat = platform.system()
+    if sys_plat == "Darwin":
+        subprocess.run(["/usr/bin/osascript", "-e", 'tell application id "com.openai.codex" to quit'], capture_output=True)
+        subprocess.run(["/usr/bin/osascript", "-e", 'tell application "ChatGPT" to quit'], capture_output=True)
+        subprocess.run(["/usr/bin/osascript", "-e", 'tell application "Codex" to quit'], capture_output=True)
+        subprocess.run(["/usr/bin/pkill", "-f", "codex.*app-server"], capture_output=True)
+        time.sleep(1.5)
         
-    blocks = "█" * filled
-    spaces = "░" * unfilled
-    return f"{fill_col}{blocks}{C_GRAY}{spaces}{C_RESET}"
+        res = subprocess.run(["/usr/bin/open", "-b", "com.openai.codex"], capture_output=True)
+        if res.returncode != 0:
+            res = subprocess.run(["/usr/bin/open", "-a", "ChatGPT"], capture_output=True)
+        if res.returncode != 0:
+            subprocess.run(["/usr/bin/open", "-a", "Codex"], capture_output=True)
+    elif sys_plat == "Windows":
+        subprocess.run(["taskkill", "/IM", "Codex.exe", "/F"], capture_output=True)
+        subprocess.run(["taskkill", "/IM", "ChatGPT.exe", "/F"], capture_output=True)
+        time.sleep(1)
+        try:
+            os.startfile("Codex")
+        except Exception:
+            try:
+                os.startfile("ChatGPT")
+            except Exception:
+                try:
+                    subprocess.Popen(["cmd", "/c", "start", "codex"], shell=True)
+                except Exception as e:
+                    print(f"⚠️  Could not automatically restart Desktop App: {e}")
+    elif sys_plat == "Linux":
+        subprocess.run(["killall", "codex"], capture_output=True)
+        time.sleep(1)
+        try:
+            subprocess.Popen(["codex"], start_new_session=True)
+        except Exception:
+            pass
+
+def switch_account(name: str, restart: bool = True):
+    acc_file = ACCOUNTS_DIR / f"{name}.json"
+    if not acc_file.exists():
+        die(f"No saved account named '{name}'. Run: csm add {name}")
+
+    CODEX_HOME.mkdir(parents=True, exist_ok=True)
+    save_active_auth()
+
+    target_auth = CODEX_HOME / "auth.json"
+    shutil.copy2(acc_file, target_auth)
+    safe_chmod(target_auth, 0o600)
+    ACTIVE_FILE.write_text(name, encoding="utf-8")
+
+    print(f"\n{C_GREEN}✅ Active Codex account:{RESET} {BOLD}{C_WHITE}{name}{RESET}")
+    print(f"   {DIM}Project and session history under ~/.codex were preserved.{RESET}")
+
+    if restart:
+        restart_codex()
+    else:
+        print(f"   {DIM}Restart Codex Desktop App manually to apply changes.{RESET}")
 
 def fetch_usage(auth: dict) -> dict:
     tokens = auth.get("tokens") or {}
@@ -378,17 +406,81 @@ def fetch_account_data(path: Path):
     except Exception as e:
         return (name, None, None, str(e))
 
+def render_card(name: str, plan: str, is_active: bool, p_left: float, s_left: float, p_reset: str, s_reset: str, resets_str: str = "", credits_str: str = ""):
+    width = 68
+    dash = "─"
+    is_tty = sys.stdout.isatty()
+    
+    if is_active:
+        border_col = C_CYAN
+        title_col = f"{BOLD}{C_WHITE}"
+        badge = f"{rgb_bg(30, 102, 245)}{BOLD}{C_WHITE} ACTIVE {RESET}"
+        dot = f"{C_GREEN}●{RESET}"
+    else:
+        border_col = C_SURFACE
+        title_col = f"{BOLD}{C_TEXT}"
+        badge = f"{DIM}[{plan.upper()}]{RESET}"
+        dot = " "
+
+    header_left = f"╭─ [ {dot} {title_col}{name}{RESET} ]"
+    right_str = f"[ {badge} ]─╮"
+    
+    left_len = len(strip_ansi(header_left))
+    right_len = len(strip_ansi(right_str))
+    fill_len = max(2, width - left_len - right_len)
+    
+    print(f"{border_col}{header_left}{dash * fill_len}{right_str}{RESET}")
+    
+    if is_tty and (p_left > 0 or s_left > 0):
+        for step in range(1, 9):
+            ratio = step / 8.0
+            b5 = progress_bar(p_left, ratio)
+            val5 = p_left * ratio
+            content_5 = f"  {DIM}5h Limit{RESET}   {b5}  {BOLD}{val5:5.1f}%{RESET} {DIM}left   reset {p_reset}{RESET}"
+            pad1 = width - len(strip_ansi(content_5)) - 2
+            sys.stdout.write(f"\r\033[K{border_col}│{RESET}{content_5}{' ' * max(0, pad1)}{border_col}│{RESET}")
+            sys.stdout.flush()
+            time.sleep(0.007)
+        print()
+        
+        for step in range(1, 9):
+            ratio = step / 8.0
+            b7 = progress_bar(s_left, ratio)
+            val7 = s_left * ratio
+            content_7 = f"  {DIM}7d Limit{RESET}   {b7}  {BOLD}{val7:5.1f}%{RESET} {DIM}left   reset {s_reset}{RESET}"
+            pad2 = width - len(strip_ansi(content_7)) - 2
+            sys.stdout.write(f"\r\033[K{border_col}│{RESET}{content_7}{' ' * max(0, pad2)}{border_col}│{RESET}")
+            sys.stdout.flush()
+            time.sleep(0.007)
+        print()
+    else:
+        bar5 = progress_bar(p_left)
+        bar7 = progress_bar(s_left)
+        content_5 = f"  {DIM}5h Limit{RESET}   {bar5}  {BOLD}{p_left:5.1f}%{RESET} {DIM}left   reset {p_reset}{RESET}"
+        pad1 = width - len(strip_ansi(content_5)) - 2
+        print(f"{border_col}│{RESET}{content_5}{' ' * max(0, pad1)}{border_col}│{RESET}")
+        
+        content_7 = f"  {DIM}7d Limit{RESET}   {bar7}  {BOLD}{s_left:5.1f}%{RESET} {DIM}left   reset {s_reset}{RESET}"
+        pad2 = width - len(strip_ansi(content_7)) - 2
+        print(f"{border_col}│{RESET}{content_7}{' ' * max(0, pad2)}{border_col}│{RESET}")
+    
+    if resets_str or credits_str:
+        extra = f"{resets_str} {credits_str}".strip()
+        pad3 = width - len(strip_ansi(extra)) - 4
+        print(f"{border_col}│{RESET}  {extra}{' ' * max(0, pad3)}{border_col}│{RESET}")
+        
+    print(f"{border_col}╰{dash * (width - 2)}╯{RESET}\n")
+
 def status_accounts():
     save_active_auth()
     active = get_active_account()
     try:
         files = sorted(ACCOUNTS_DIR.glob("*.json"))
     except Exception as e:
-        print(f"❌ Could not access accounts directory: {e}")
-        return
+        die(f"Could not access accounts directory: {e}")
 
     if not files:
-        print("No saved accounts found. First run: csm add <name>")
+        print(f"{C_YELLOW}No saved accounts found. Run: csm add <name>{RESET}")
         return
 
     is_tty = sys.stdout.isatty()
@@ -397,7 +489,7 @@ def status_accounts():
     spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
     if is_tty:
-        sys.stdout.write("\033[?25l")  # Hide cursor
+        sys.stdout.write("\033[?25l")
         sys.stdout.flush()
 
     try:
@@ -408,9 +500,9 @@ def status_accounts():
                 done_count = sum(1 for f in futures if f.done())
                 if is_tty:
                     spin = spinner[spin_idx % len(spinner)]
-                    sys.stdout.write(f"\r\033[K{C_BRIGHT_CYAN}{spin}{C_RESET}  {C_BOLD}Checking Codex quotas...{C_RESET} {C_DIM}({done_count}/{len(files)}){C_RESET}")
+                    sys.stdout.write(f"\r\033[K  {C_CYAN}{spin}{RESET}  {BOLD}Checking Codex quotas across {len(files)} accounts...{RESET} {DIM}({done_count}/{len(files)}){RESET}")
                     sys.stdout.flush()
-                time.sleep(0.05)
+                time.sleep(0.045)
                 spin_idx += 1
 
             for f in futures:
@@ -421,65 +513,42 @@ def status_accounts():
             sys.stdout.write("\r\033[K")
             sys.stdout.flush()
 
-        # Header
-        print(f"\n{C_BRIGHT_MAGENTA}╭────────────────────────────────────────────────────────────────╮{C_RESET}")
-        print(f"{C_BRIGHT_MAGENTA}│{C_RESET}  {C_BOLD}{C_BRIGHT_CYAN}⚡ Codex Rate Limits & Live Quota{C_RESET}                            {C_BRIGHT_MAGENTA}│{C_RESET}")
-        print(f"{C_BRIGHT_MAGENTA}╰────────────────────────────────────────────────────────────────╯{C_RESET}\n")
+        # Aggregate total resets
+        total_resets = 0
+        for name, (_, reset_data, _) in results.items():
+            if isinstance(reset_data, dict):
+                total_resets += reset_data.get("available_count", 0)
+
+        # Print Cyberpunk Header Banner
+        print_banner(len(files), total_resets, active)
 
         rows = []
         for path in files:
             name = path.stem
             is_active = (name == active)
-            mark = f"{C_BRIGHT_CYAN}●{C_RESET}" if is_active else " "
-            name_str = f"{C_BOLD}{C_WHITE}{name}{C_RESET}" if is_active else f"{C_WHITE}{name}{C_RESET}"
-
             usage_data, reset_data, err = results.get(name, (None, None, None))
+            
             if err or not usage_data:
-                print(f"{mark} {name_str}")
-                print(f"   {C_RED}❌ Could not retrieve usage: {err}{C_RESET}\n")
+                border_col = C_SURFACE
+                print(f"{border_col}╭─ [ {name} ]{'─' * (58 - len(name))}─╮{RESET}")
+                print(f"{border_col}│{RESET}  {C_RED}❌ Could not retrieve usage: {err}{RESET}")
+                print(f"{border_col}╰{'─' * 60}╯{RESET}\n")
                 continue
 
             rl = usage_data.get("rate_limit") or {}
-            p = rl.get("primary_window") or {}
-            s = rl.get("secondary_window") or {}
+            pw = rl.get("primary_window") or {}
+            sw = rl.get("secondary_window") or {}
 
-            p_used = float(p.get("used_percent", 0))
-            s_used = float(s.get("used_percent", 0))
+            p_used = float(pw.get("used_percent", 0))
+            s_used = float(sw.get("used_percent", 0))
             p_left = max(0.0, 100.0 - p_used)
             s_left = max(0.0, 100.0 - s_used)
-            plan = usage_data.get("plan_type") or "?"
+            plan = usage_data.get("plan_type") or "plus"
 
             score = min(p_left, s_left)
             rows.append((score, p_left, s_left, name))
 
-            active_badge = f" {C_DIM}{C_CYAN}(active){C_RESET}" if is_active else ""
-            print(f"{mark} {name_str} {C_DIM}[{plan}]{C_RESET}{active_badge}")
-
-            # Animated bar reveal if in TTY
-            if is_tty:
-                for step in range(1, 11):
-                    ratio = step / 10.0
-                    b5 = progress_bar(p_left, ratio)
-                    val5 = p_left * ratio
-                    sys.stdout.write(f"\r\033[K   {C_DIM}5h{C_RESET}  {b5} {C_BOLD}{val5:5.1f}%{C_RESET} left   {C_DIM}reset {reset_in(p)}{C_RESET}")
-                    sys.stdout.flush()
-                    time.sleep(0.008)
-                print()
-                for step in range(1, 11):
-                    ratio = step / 10.0
-                    b7 = progress_bar(s_left, ratio)
-                    val7 = s_left * ratio
-                    sys.stdout.write(f"\r\033[K   {C_DIM}7d{C_RESET}  {b7} {C_BOLD}{val7:5.1f}%{C_RESET} left   {C_DIM}reset {reset_in(s)}{C_RESET}")
-                    sys.stdout.flush()
-                    time.sleep(0.008)
-                print()
-            else:
-                b5 = progress_bar(p_left)
-                b7 = progress_bar(s_left)
-                print(f"   5h  {b5} {p_left:5.1f}% left   reset {reset_in(p)}")
-                print(f"   7d  {b7} {s_left:5.1f}% left   reset {reset_in(s)}")
-
-            # Resets
+            # Resets & Expiry
             credits_list = reset_data.get("credits", []) if isinstance(reset_data, dict) else []
             avail = reset_data.get("available_count") if isinstance(reset_data, dict) else None
             rc = usage_data.get("rate_limit_reset_credits") or {}
@@ -487,6 +556,7 @@ def status_accounts():
             if avail is None:
                 avail = rc.get("available_count", 0)
 
+            resets_str = ""
             if avail > 0:
                 earliest_exp = None
                 for c in credits_list:
@@ -495,27 +565,129 @@ def status_accounts():
                         if not earliest_exp or exp_str < earliest_exp:
                             earliest_exp = exp_str
 
-                exp_text = f" {C_DIM}• {fmt_expiry(earliest_exp)}{C_RESET}" if earliest_exp else ""
-                status_note = f" {C_BRIGHT_GREEN}(can apply now){C_RESET}" if app_avail > 0 else ""
-                print(f"   {C_BRIGHT_YELLOW}⚡ Resets:{C_RESET} {C_BOLD}{avail} available{C_RESET}{exp_text}{status_note}")
+                exp_text = f" {DIM}• {fmt_expiry(earliest_exp)}{RESET}" if earliest_exp else ""
+                status_note = f" {C_GREEN}(can apply now){RESET}" if app_avail > 0 else ""
+                resets_str = f"{C_YELLOW}⚡ Resets:{RESET} {BOLD}{avail} available{RESET}{exp_text}{status_note}"
             else:
-                print(f"   {C_DIM}⚡ Resets: 0{C_RESET}")
+                resets_str = f"{DIM}⚡ Resets: 0{RESET}"
 
-            credits = usage_data.get("credits")
-            if isinstance(credits, dict) and credits.get("balance") is not None:
-                bal = str(credits.get("balance"))
+            credits_str = ""
+            credits_obj = usage_data.get("credits")
+            if isinstance(credits_obj, dict) and credits_obj.get("balance") is not None:
+                bal = str(credits_obj.get("balance"))
                 if bal != "0":
-                    print(f"   {C_BRIGHT_YELLOW}💵 Credits:{C_RESET} ${bal}")
-            print()
+                    credits_str = f"{C_YELLOW}💵 Credits:{RESET} ${bal}"
+
+            render_card(name, plan, is_active, p_left, s_left, reset_in(pw), reset_in(sw), resets_str, credits_str)
 
         if rows:
             best = max(rows, key=lambda x: (x[0], x[1] + x[2]))
-            print(f"{C_GRAY}────────────────────────────────────────────────────────────────{C_RESET}")
-            print(f"🏆 {C_BOLD}Recommended:{C_RESET} {C_BRIGHT_GREEN}{best[3]}{C_RESET}  {C_DIM}(5h: {best[1]:.1f}% / 7d: {best[2]:.1f}% remaining){C_RESET}\n")
+            width = 68
+            card_top = f"{C_GREEN}╭─ [ 🏆 RECOMMENDED SWITCH ]{'─' * (width - 29)}─╮{RESET}"
+            content = f"  {BOLD}{C_WHITE}{best[3]}{RESET} {DIM}→ {C_GREEN}{best[1]:.1f}%{RESET}{DIM} 5h / {C_GREEN}{best[2]:.1f}%{RESET}{DIM} 7d capacity available{RESET}"
+            pad = width - len(strip_ansi(content)) - 2
+            card_bot = f"{C_GREEN}╰{'─' * (width - 2)}╯{RESET}"
+            
+            print(card_top)
+            print(f"{C_GREEN}│{RESET}{content}{' ' * max(0, pad)}{C_GREEN}│{RESET}")
+            action_line = f"  {DIM}Run {C_CYAN}csm use {best[3]}{RESET}{DIM} or {C_CYAN}csm pick{RESET}{DIM} to activate.{RESET}"
+            pad_act = width - len(strip_ansi(action_line)) - 2
+            print(f"{C_GREEN}│{RESET}{action_line}{' ' * max(0, pad_act)}{C_GREEN}│{RESET}")
+            print(card_bot + "\n")
     finally:
         if is_tty:
-            sys.stdout.write("\033[?25h")  # Restore cursor
+            sys.stdout.write("\033[?25h")
             sys.stdout.flush()
+
+def read_key():
+    if os.name == "nt":
+        import msvcrt
+        k = msvcrt.getch()
+        if k in (b"\x00", b"\xe0"):
+            k2 = msvcrt.getch()
+            if k2 == b"H": return "UP"
+            elif k2 == b"P": return "DOWN"
+        elif k == b"\r": return "ENTER"
+        elif k in (b"\x03", b"q", b"Q"): return "QUIT"
+        return "OTHER"
+    else:
+        import termios, tty
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            ch = sys.stdin.read(1)
+            if ch == "\x1b":
+                ch2 = sys.stdin.read(1)
+                if ch2 == "[":
+                    ch3 = sys.stdin.read(1)
+                    if ch3 == "A": return "UP"
+                    elif ch3 == "B": return "DOWN"
+            elif ch in ("\r", "\n"):
+                return "ENTER"
+            elif ch in ("\x03", "q", "Q"):
+                return "QUIT"
+            return "OTHER"
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+def interactive_picker():
+    files = sorted(ACCOUNTS_DIR.glob("*.json"))
+    if not files:
+        die("No saved accounts found. First run: csm add <name>")
+
+    active = get_active_account()
+    account_names = [f.stem for f in files]
+    
+    if not sys.stdout.isatty():
+        list_accounts()
+        return
+
+    print_banner(len(account_names), 0, active)
+    print(f"  {BOLD}Select Codex account to switch to:{RESET} {DIM}(Use ↑/↓ arrows, Enter to select, Q to quit){RESET}\n")
+
+    selected = 0
+    if active in account_names:
+        selected = account_names.index(active)
+
+    sys.stdout.write("\033[?25l")
+    sys.stdout.flush()
+
+    try:
+        while True:
+            for i, name in enumerate(account_names):
+                is_curr = (i == selected)
+                is_act = (name == active)
+                
+                pointer = f"{C_CYAN}❯{RESET}" if is_curr else " "
+                dot = f"{C_GREEN}●{RESET}" if is_act else f"{DIM}○{RESET}"
+                act_badge = f" {C_DIM}(active){RESET}" if is_act else ""
+                
+                if is_curr:
+                    print(f"  {pointer} {dot} {BOLD}{C_BRIGHT_CYAN}{name}{RESET}{act_badge}")
+                else:
+                    print(f"  {pointer} {dot} {C_TEXT}{name}{RESET}{act_badge}")
+
+            key = read_key()
+            if key == "UP":
+                selected = (selected - 1) % len(account_names)
+            elif key == "DOWN":
+                selected = (selected + 1) % len(account_names)
+            elif key == "ENTER":
+                chosen = account_names[selected]
+                print(f"\n{C_CYAN}→ Selected:{RESET} {BOLD}{chosen}{RESET}")
+                switch_account(chosen, restart=True)
+                break
+            elif key == "QUIT":
+                print(f"\n{DIM}Canceled.{RESET}")
+                break
+
+            # Move cursor up to redraw
+            sys.stdout.write(f"\033[{len(account_names)}A")
+            sys.stdout.flush()
+    finally:
+        sys.stdout.write("\033[?25h")
+        sys.stdout.flush()
 
 def pick_account():
     save_active_auth()
@@ -541,9 +713,9 @@ def pick_account():
             while not all(f.done() for f in futures):
                 if is_tty:
                     spin = spinner[spin_idx % len(spinner)]
-                    sys.stdout.write(f"\r\033[K{C_BRIGHT_CYAN}{spin}{C_RESET}  {C_BOLD}Evaluating healthiest Codex account...{C_RESET}")
+                    sys.stdout.write(f"\r\033[K  {C_CYAN}{spin}{RESET}  {BOLD}Evaluating healthiest Codex account across {len(files)} accounts...{RESET}")
                     sys.stdout.flush()
-                time.sleep(0.05)
+                time.sleep(0.045)
                 spin_idx += 1
 
             for f in futures:
@@ -555,7 +727,7 @@ def pick_account():
                     pleft = max(0.0, 100 - float(pw.get("used_percent", 0)))
                     sleft = max(0.0, 100 - float(sw.get("used_percent", 0)))
                     score = (min(pleft, sleft), pleft + sleft)
-                    results.append((score, name))
+                    results.append((score, pleft, sleft, name))
 
         if is_tty:
             sys.stdout.write("\r\033[K")
@@ -569,28 +741,24 @@ def pick_account():
         die("Could not retrieve valid usage metrics from any saved accounts.")
 
     best = max(results, key=lambda x: x[0])
-    picked = best[1]
-    print(f"\n🏆 {C_BOLD}Best account found:{C_RESET} {C_BRIGHT_GREEN}{picked}{C_RESET}")
+    picked = best[3]
+    print(f"\n🏆 {BOLD}Healthiest account found:{RESET} {C_GREEN}{picked}{RESET} {DIM}(5h: {best[1]:.1f}% / 7d: {best[2]:.1f}% remaining){RESET}")
     switch_account(picked, restart=True)
 
 def list_accounts():
-    print("Saved accounts:")
     active = get_active_account()
-    try:
-        files = sorted(ACCOUNTS_DIR.glob("*.json"))
-    except Exception as e:
-        print(f"  ❌ Could not read accounts directory ({e})")
-        return
-
+    files = sorted(ACCOUNTS_DIR.glob("*.json"))
+    print_banner(len(files), 0, active)
     if not files:
-        print("  (none)")
+        print(f"  {DIM}(no accounts saved yet — run: csm add <name>){RESET}\n")
         return
     for f in files:
         name = f.stem
         if name == active:
-            print(f"  * {name}  (active)")
+            print(f"  {C_GREEN}●{RESET} {BOLD}{C_WHITE}{name}{RESET} {C_CYAN}(active){RESET}")
         else:
-            print(f"    {name}")
+            print(f"  {DIM}○{RESET} {C_TEXT}{name}{RESET}")
+    print()
 
 def remove_account(name: str):
     target = ACCOUNTS_DIR / f"{name}.json"
@@ -602,7 +770,7 @@ def remove_account(name: str):
             ACTIVE_FILE.unlink()
         except Exception:
             pass
-    print(f"✅ Account '{name}' removed.")
+    print(f"{C_GREEN}✅ Account '{name}' removed.{RESET}")
 
 def update_csm():
     info("Checking for updates and downloading latest csm...")
@@ -624,7 +792,7 @@ def update_csm():
 
         target_path.write_bytes(new_content)
         safe_chmod(target_path, 0o755)
-        print(f"✅ csm successfully updated to latest version at {target_path}!")
+        print(f"{C_GREEN}✅ csm successfully updated to latest version at {target_path}!{RESET}")
     except PermissionError:
         print(f"⚠️  Permission denied when writing to {target_path}.")
         if sys.platform != "win32":
@@ -637,7 +805,7 @@ def update_csm():
 def main():
     init_store()
     args = sys.argv[1:]
-    cmd = args[0] if args else "help"
+    cmd = args[0] if args else "status"
 
     if cmd == "add":
         if len(args) < 2:
@@ -655,12 +823,14 @@ def main():
             die(f"No saved account named '{name}'.")
         isolated_login(name)
 
-    elif cmd == "use":
-        if len(args) < 2:
-            die("Usage: csm use <name> [--no-restart]")
-        name = safe_name(args[1])
-        no_restart = "--no-restart" in args[2:]
-        switch_account(name, restart=not no_restart)
+    elif cmd in ("use", "switch"):
+        if len(args) == 1:
+            # Interactive mode when no name provided
+            interactive_picker()
+        else:
+            name = safe_name(args[1])
+            no_restart = "--no-restart" in args[2:]
+            switch_account(name, restart=not no_restart)
 
     elif cmd == "list":
         list_accounts()
@@ -685,7 +855,7 @@ def main():
         update_csm()
 
     elif cmd in ("version", "-v", "--version"):
-        print(f"csm v{VERSION}")
+        print(f"{BOLD}csm{RESET} version {C_GREEN}v{VERSION}{RESET}")
 
     elif cmd in ("help", "-h", "--help"):
         usage()

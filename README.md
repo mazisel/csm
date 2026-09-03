@@ -3,7 +3,7 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)](https://github.com/mazisel/csm)
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.4.0-green.svg)](https://github.com/mazisel/csm)
+[![Version](https://img.shields.io/badge/version-2.5.0-green.svg)](https://github.com/mazisel/csm)
 
 A powerful, safe, cross-platform **Multi-Account Switcher & Real-Time Quota Manager** for OpenAI Codex on **macOS**, **Windows**, and **Linux**.
 
@@ -59,21 +59,32 @@ csm status
 
 **Example Output:**
 ```text
-Codex Rate Limits & Usage
-────────────────────────────────────────────────────────────────
-● personal [plus]
-   5h  ████████████████░░░░  80.0% left   reset 3h 12m
-   7d  ████████████████████ 100.0% left   reset ?
-   ⚡ Resets: 1 available • expires 20 Sep (17d left)
+  ██████╗███████╗███╗   ███╗
+ ██╔════╝██╔════╝████╗ ████║
+ ██║     ███████╗██╔████╔██║
+ ╚██████╗███████║██║ ╚═╝ ██║
+  ╚═════╝╚══════╝╚═╝     ╚═╝
 
-  work [team]
-   5h  ████░░░░░░░░░░░░░░░░  20.0% left   reset 45m
-   7d  ██████████████░░░░░░  70.0% left   reset 2d 4h
-   ⚡ Resets: 1 available • expires 20 Sep (17d left) (can apply now)
-   💵 Credits: $15.00
+  ◆ Codex Account Engine v2.5.0
+  Fleet: 4 accounts • ⚡ 2 resets • Active: yaman
+  ──────────────────────────────────────────────────────────────
 
-────────────────────────────────────────────────────────────────
-Recommended: personal  (5h: 80.0% / 7d: 100.0% remaining)
+╭─ [ ● yaman ]────────────────────────────────────────[  ACTIVE  ]─╮
+│  5h Limit   ████████████████████  100.0% left   reset in 5h      │
+│  7d Limit   ████████████████░░░░   80.0% left   reset in 3d 8h   │
+│  ⚡ Resets: 1 available • expires 20 Sep (17d left)               │
+╰──────────────────────────────────────────────────────────────────╯
+
+╭─ [   mukaddes ]───────────────────────────────────────[ [PLUS] ]─╮
+│  5h Limit   ░░░░░░░░░░░░░░░░░░░░    0.0% left   reset in 33m     │
+│  7d Limit   ███████░░░░░░░░░░░░░   34.0% left   reset in 3d 17h  │
+│  ⚡ Resets: 1 available • expires 20 Sep (17d left) (can apply now)│
+╰──────────────────────────────────────────────────────────────────╯
+
+╭─ [ 🏆 RECOMMENDED SWITCH ]────────────────────────────────────────╮
+│  yaman → 100.0% 5h / 80.0% 7d capacity available                 │
+│  Run csm use yaman or csm pick to activate.                      │
+╰──────────────────────────────────────────────────────────────────╯
 ```
 
 ### 3. Switch accounts
