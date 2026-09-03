@@ -17,6 +17,7 @@ import tempfile
 import platform
 import subprocess
 import re
+import concurrent.futures
 from datetime import datetime
 from pathlib import Path
 
@@ -26,7 +27,7 @@ if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
 if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-VERSION = "2.3.0"
+VERSION = "2.4.0"
 APP_NAME = "Codex"
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 STORE_DIR = Path.home() / ".codex-multi"
@@ -37,6 +38,23 @@ USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
 AUTH_URL = "https://auth.openai.com/oauth/token"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+
+# ANSI Colors
+C_RESET = "\033[0m"
+C_BOLD = "\033[1m"
+C_DIM = "\033[2m"
+C_CYAN = "\033[36m"
+C_BRIGHT_CYAN = "\033[96m"
+C_GREEN = "\033[32m"
+C_BRIGHT_GREEN = "\033[92m"
+C_YELLOW = "\033[33m"
+C_BRIGHT_YELLOW = "\033[93m"
+C_RED = "\033[31m"
+C_BRIGHT_RED = "\033[91m"
+C_MAGENTA = "\033[35m"
+C_BRIGHT_MAGENTA = "\033[95m"
+C_GRAY = "\033[90m"
+C_WHITE = "\033[97m"
 
 def init_store():
     try:
@@ -293,10 +311,21 @@ def reset_in(w: dict) -> str:
         return fmt_seconds(w["reset_at"] - int(time.time()))
     return "?"
 
-def progress_bar(left: float) -> str:
-    left = max(0.0, min(100.0, left))
-    filled = round(left / 5)
-    return "█" * filled + "░" * (20 - filled)
+def progress_bar(left_pct: float, anim_ratio: float = 1.0) -> str:
+    val = max(0.0, min(100.0, left_pct * anim_ratio))
+    filled = round(val / 5)
+    unfilled = 20 - filled
+    
+    if left_pct >= 50:
+        fill_col = C_BRIGHT_GREEN
+    elif left_pct >= 20:
+        fill_col = C_BRIGHT_YELLOW
+    else:
+        fill_col = C_BRIGHT_RED
+        
+    blocks = "█" * filled
+    spaces = "░" * unfilled
+    return f"{fill_col}{blocks}{C_GRAY}{spaces}{C_RESET}"
 
 def fetch_usage(auth: dict) -> dict:
     tokens = auth.get("tokens") or {}
@@ -310,7 +339,7 @@ def fetch_usage(auth: dict) -> dict:
         headers["ChatGPT-Account-ID"] = account_id
 
     req = urllib.request.Request(USAGE_URL, headers=headers)
-    with urllib.request.urlopen(req, timeout=20) as r:
+    with urllib.request.urlopen(req, timeout=15) as r:
         return json.load(r)
 
 def fetch_reset_credits(auth: dict) -> dict:
@@ -331,6 +360,24 @@ def fetch_reset_credits(auth: dict) -> dict:
     except Exception:
         return {}
 
+def fetch_account_data(path: Path):
+    name = path.stem
+    try:
+        auth = json.loads(path.read_text(encoding="utf-8"))
+        auth = refresh_auth(auth, path)
+        usage_data = fetch_usage(auth)
+        reset_data = fetch_reset_credits(auth)
+        return (name, usage_data, reset_data, None)
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode("utf-8", "replace")
+            msg = json.loads(body).get("error", {}).get("code") or body[:120]
+        except Exception:
+            msg = f"HTTP {e.code}"
+        return (name, None, None, msg)
+    except Exception as e:
+        return (name, None, None, str(e))
+
 def status_accounts():
     save_active_auth()
     active = get_active_account()
@@ -344,18 +391,55 @@ def status_accounts():
         print("No saved accounts found. First run: csm add <name>")
         return
 
-    print("\nCodex Rate Limits & Usage")
-    print("────────────────────────────────────────────────────────────────")
+    is_tty = sys.stdout.isatty()
+    results = {}
+    done_count = 0
+    spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
-    rows = []
-    for path in files:
-        name = path.stem
-        mark = "●" if name == active else " "
-        try:
-            auth = json.loads(path.read_text(encoding="utf-8"))
-            auth = refresh_auth(auth, path)
-            data = fetch_usage(auth)
-            rl = data.get("rate_limit") or {}
+    if is_tty:
+        sys.stdout.write("\033[?25l")  # Hide cursor
+        sys.stdout.flush()
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(files)) as executor:
+            futures = {executor.submit(fetch_account_data, p): p for p in files}
+            spin_idx = 0
+            while not all(f.done() for f in futures):
+                done_count = sum(1 for f in futures if f.done())
+                if is_tty:
+                    spin = spinner[spin_idx % len(spinner)]
+                    sys.stdout.write(f"\r\033[K{C_BRIGHT_CYAN}{spin}{C_RESET}  {C_BOLD}Checking Codex quotas...{C_RESET} {C_DIM}({done_count}/{len(files)}){C_RESET}")
+                    sys.stdout.flush()
+                time.sleep(0.05)
+                spin_idx += 1
+
+            for f in futures:
+                name, usage_data, reset_data, err = f.result()
+                results[name] = (usage_data, reset_data, err)
+
+        if is_tty:
+            sys.stdout.write("\r\033[K")
+            sys.stdout.flush()
+
+        # Header
+        print(f"\n{C_BRIGHT_MAGENTA}╭────────────────────────────────────────────────────────────────╮{C_RESET}")
+        print(f"{C_BRIGHT_MAGENTA}│{C_RESET}  {C_BOLD}{C_BRIGHT_CYAN}⚡ Codex Rate Limits & Live Quota{C_RESET}                            {C_BRIGHT_MAGENTA}│{C_RESET}")
+        print(f"{C_BRIGHT_MAGENTA}╰────────────────────────────────────────────────────────────────╯{C_RESET}\n")
+
+        rows = []
+        for path in files:
+            name = path.stem
+            is_active = (name == active)
+            mark = f"{C_BRIGHT_CYAN}●{C_RESET}" if is_active else " "
+            name_str = f"{C_BOLD}{C_WHITE}{name}{C_RESET}" if is_active else f"{C_WHITE}{name}{C_RESET}"
+
+            usage_data, reset_data, err = results.get(name, (None, None, None))
+            if err or not usage_data:
+                print(f"{mark} {name_str}")
+                print(f"   {C_RED}❌ Could not retrieve usage: {err}{C_RESET}\n")
+                continue
+
+            rl = usage_data.get("rate_limit") or {}
             p = rl.get("primary_window") or {}
             s = rl.get("secondary_window") or {}
 
@@ -363,19 +447,42 @@ def status_accounts():
             s_used = float(s.get("used_percent", 0))
             p_left = max(0.0, 100.0 - p_used)
             s_left = max(0.0, 100.0 - s_used)
-            plan = data.get("plan_type") or "?"
+            plan = usage_data.get("plan_type") or "?"
 
             score = min(p_left, s_left)
             rows.append((score, p_left, s_left, name))
 
-            print(f"{mark} {name} [{plan}]")
-            print(f"   5h  {progress_bar(p_left)} {p_left:5.1f}% left   reset {reset_in(p)}")
-            print(f"   7d  {progress_bar(s_left)} {s_left:5.1f}% left   reset {reset_in(s)}")
+            active_badge = f" {C_DIM}{C_CYAN}(active){C_RESET}" if is_active else ""
+            print(f"{mark} {name_str} {C_DIM}[{plan}]{C_RESET}{active_badge}")
 
-            reset_data = fetch_reset_credits(auth)
+            # Animated bar reveal if in TTY
+            if is_tty:
+                for step in range(1, 11):
+                    ratio = step / 10.0
+                    b5 = progress_bar(p_left, ratio)
+                    val5 = p_left * ratio
+                    sys.stdout.write(f"\r\033[K   {C_DIM}5h{C_RESET}  {b5} {C_BOLD}{val5:5.1f}%{C_RESET} left   {C_DIM}reset {reset_in(p)}{C_RESET}")
+                    sys.stdout.flush()
+                    time.sleep(0.008)
+                print()
+                for step in range(1, 11):
+                    ratio = step / 10.0
+                    b7 = progress_bar(s_left, ratio)
+                    val7 = s_left * ratio
+                    sys.stdout.write(f"\r\033[K   {C_DIM}7d{C_RESET}  {b7} {C_BOLD}{val7:5.1f}%{C_RESET} left   {C_DIM}reset {reset_in(s)}{C_RESET}")
+                    sys.stdout.flush()
+                    time.sleep(0.008)
+                print()
+            else:
+                b5 = progress_bar(p_left)
+                b7 = progress_bar(s_left)
+                print(f"   5h  {b5} {p_left:5.1f}% left   reset {reset_in(p)}")
+                print(f"   7d  {b7} {s_left:5.1f}% left   reset {reset_in(s)}")
+
+            # Resets
             credits_list = reset_data.get("credits", []) if isinstance(reset_data, dict) else []
-            avail = reset_data.get("available_count")
-            rc = data.get("rate_limit_reset_credits") or {}
+            avail = reset_data.get("available_count") if isinstance(reset_data, dict) else None
+            rc = usage_data.get("rate_limit_reset_credits") or {}
             app_avail = rc.get("applicable_available_count", 0)
             if avail is None:
                 avail = rc.get("available_count", 0)
@@ -388,34 +495,27 @@ def status_accounts():
                         if not earliest_exp or exp_str < earliest_exp:
                             earliest_exp = exp_str
 
-                exp_text = f" • {fmt_expiry(earliest_exp)}" if earliest_exp else ""
-                status_note = " (can apply now)" if app_avail > 0 else ""
-                print(f"   ⚡ Resets: {avail} available{exp_text}{status_note}")
+                exp_text = f" {C_DIM}• {fmt_expiry(earliest_exp)}{C_RESET}" if earliest_exp else ""
+                status_note = f" {C_BRIGHT_GREEN}(can apply now){C_RESET}" if app_avail > 0 else ""
+                print(f"   {C_BRIGHT_YELLOW}⚡ Resets:{C_RESET} {C_BOLD}{avail} available{C_RESET}{exp_text}{status_note}")
             else:
-                print(f"   ⚡ Resets: 0")
+                print(f"   {C_DIM}⚡ Resets: 0{C_RESET}")
 
-            credits = data.get("credits")
+            credits = usage_data.get("credits")
             if isinstance(credits, dict) and credits.get("balance") is not None:
                 bal = str(credits.get("balance"))
                 if bal != "0":
-                    print(f"   💵 Credits: ${bal}")
+                    print(f"   {C_BRIGHT_YELLOW}💵 Credits:{C_RESET} ${bal}")
             print()
-        except urllib.error.HTTPError as e:
-            try:
-                body = e.read().decode("utf-8", "replace")
-                msg = json.loads(body).get("error", {}).get("code") or body[:120]
-            except Exception:
-                msg = f"HTTP {e.code}"
-            print(f"{mark} {name}")
-            print(f"   ❌ Could not retrieve usage: {msg}\n")
-        except Exception as e:
-            print(f"{mark} {name}")
-            print(f"   ❌ {e}\n")
 
-    if rows:
-        best = max(rows, key=lambda x: (x[0], x[1] + x[2]))
-        print("────────────────────────────────────────────────────────────────")
-        print(f"Recommended: {best[3]}  (5h: {best[1]:.1f}% / 7d: {best[2]:.1f}% remaining)")
+        if rows:
+            best = max(rows, key=lambda x: (x[0], x[1] + x[2]))
+            print(f"{C_GRAY}────────────────────────────────────────────────────────────────{C_RESET}")
+            print(f"🏆 {C_BOLD}Recommended:{C_RESET} {C_BRIGHT_GREEN}{best[3]}{C_RESET}  {C_DIM}(5h: {best[1]:.1f}% / 7d: {best[2]:.1f}% remaining){C_RESET}\n")
+    finally:
+        if is_tty:
+            sys.stdout.write("\033[?25h")  # Restore cursor
+            sys.stdout.flush()
 
 def pick_account():
     save_active_auth()
@@ -424,37 +524,53 @@ def pick_account():
     except Exception as e:
         die(f"Could not access accounts directory: {e}")
 
-    best = None
-    for path in files:
-        try:
-            auth = json.loads(path.read_text(encoding="utf-8"))
-            auth = refresh_auth(auth, path)
-            tokens = auth.get("tokens") or {}
-            headers = {"Authorization": "Bearer " + tokens["access_token"]}
-            if tokens.get("account_id"):
-                headers["ChatGPT-Account-ID"] = tokens["account_id"]
+    if not files:
+        die("No saved accounts found. First run: csm add <name>")
 
-            req = urllib.request.Request(USAGE_URL, headers=headers)
-            with urllib.request.urlopen(req, timeout=20) as r:
-                u = json.load(r)
+    is_tty = sys.stdout.isatty()
+    spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    if is_tty:
+        sys.stdout.write("\033[?25l")
+        sys.stdout.flush()
 
-            rl = u.get("rate_limit") or {}
-            pw = rl.get("primary_window") or {}
-            sw = rl.get("secondary_window") or {}
-            pleft = max(0.0, 100 - float(pw.get("used_percent", 0)))
-            sleft = max(0.0, 100 - float(sw.get("used_percent", 0)))
-            score = (min(pleft, sleft), pleft + sleft)
+    results = []
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(files)) as executor:
+            futures = {executor.submit(fetch_account_data, p): p for p in files}
+            spin_idx = 0
+            while not all(f.done() for f in futures):
+                if is_tty:
+                    spin = spinner[spin_idx % len(spinner)]
+                    sys.stdout.write(f"\r\033[K{C_BRIGHT_CYAN}{spin}{C_RESET}  {C_BOLD}Evaluating healthiest Codex account...{C_RESET}")
+                    sys.stdout.flush()
+                time.sleep(0.05)
+                spin_idx += 1
 
-            if best is None or score > best[0]:
-                best = (score, path.stem)
-        except Exception:
-            pass
+            for f in futures:
+                name, usage_data, _, err = f.result()
+                if usage_data and not err:
+                    rl = usage_data.get("rate_limit") or {}
+                    pw = rl.get("primary_window") or {}
+                    sw = rl.get("secondary_window") or {}
+                    pleft = max(0.0, 100 - float(pw.get("used_percent", 0)))
+                    sleft = max(0.0, 100 - float(sw.get("used_percent", 0)))
+                    score = (min(pleft, sleft), pleft + sleft)
+                    results.append((score, name))
 
-    if not best:
+        if is_tty:
+            sys.stdout.write("\r\033[K")
+            sys.stdout.flush()
+    finally:
+        if is_tty:
+            sys.stdout.write("\033[?25h")
+            sys.stdout.flush()
+
+    if not results:
         die("Could not retrieve valid usage metrics from any saved accounts.")
 
+    best = max(results, key=lambda x: x[0])
     picked = best[1]
-    print(f"🏆 Best account found: {picked}")
+    print(f"\n🏆 {C_BOLD}Best account found:{C_RESET} {C_BRIGHT_GREEN}{picked}{C_RESET}")
     switch_account(picked, restart=True)
 
 def list_accounts():
