@@ -28,7 +28,7 @@ if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
 if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-VERSION = "2.6.0"
+VERSION = "2.7.0"
 APP_NAME = "Codex"
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 STORE_DIR = Path.home() / ".codex-multi"
@@ -410,7 +410,7 @@ def fetch_account_data(path: Path):
     except Exception as e:
         return (name, None, None, str(e))
 
-def render_card(name: str, plan: str, is_active: bool, p_left: float, s_left: float, p_reset: str, s_reset: str, resets_str: str = "", credits_str: str = "", animate: bool = True):
+def render_card(name: str, plan: str, is_active: bool, p_left: float, s_left: float, p_reset: str, s_reset: str, extra_lines: list = None, animate: bool = True):
     width = 68
     dash = "─"
     is_tty = sys.stdout.isatty() and animate
@@ -468,10 +468,12 @@ def render_card(name: str, plan: str, is_active: bool, p_left: float, s_left: fl
         pad2 = width - len(strip_ansi(content_7)) - 2
         print(f"{border_col}│{RESET}{content_7}{' ' * max(0, pad2)}{border_col}│{RESET}")
     
-    if resets_str or credits_str:
-        extra = f"{resets_str} {credits_str}".strip()
-        pad3 = width - len(strip_ansi(extra)) - 4
-        print(f"{border_col}│{RESET}  {extra}{' ' * max(0, pad3)}{border_col}│{RESET}")
+    if extra_lines:
+        for line in extra_lines:
+            if not line:
+                continue
+            pad = width - len(strip_ansi(line)) - 4
+            print(f"{border_col}│{RESET}  {line}{' ' * max(0, pad)}{border_col}│{RESET}")
         
     print(f"{border_col}╰{dash * (width - 2)}╯{RESET}\n")
 
@@ -536,6 +538,7 @@ def render_dashboard(results: dict, files: list, active: str, animate: bool = Tr
         score = min(p_left, s_left)
         rows.append((score, p_left, s_left, name))
 
+        # Reset credits & expiration handling
         credits_list = reset_data.get("credits", []) if isinstance(reset_data, dict) else []
         avail = reset_data.get("available_count") if isinstance(reset_data, dict) else None
         rc = usage_data.get("rate_limit_reset_credits") or {}
@@ -543,29 +546,37 @@ def render_dashboard(results: dict, files: list, active: str, animate: bool = Tr
         if avail is None:
             avail = rc.get("available_count", 0)
 
-        resets_str = ""
-        if avail > 0:
-            earliest_exp = None
-            for c in credits_list:
-                if c.get("status") == "available" and c.get("expires_at"):
-                    exp_str = c.get("expires_at")
-                    if not earliest_exp or exp_str < earliest_exp:
-                        earliest_exp = exp_str
+        extra_lines = []
+        available_credits = [c for c in credits_list if c.get("status") in ("available", None)]
+        available_credits.sort(key=lambda x: x.get("expires_at") or "9999")
 
-            exp_text = f" {DIM}• {fmt_expiry(earliest_exp)}{RESET}" if earliest_exp else ""
-            status_note = f" {C_GREEN}(can apply now){RESET}" if app_avail > 0 else ""
-            resets_str = f"{C_YELLOW}⚡ Resets:{RESET} {BOLD}{avail} available{RESET}{exp_text}{status_note}"
+        status_note = f" {C_GREEN}(can apply now){RESET}" if app_avail > 0 else ""
+
+        if len(available_credits) > 1:
+            extra_lines.append(f"{C_YELLOW}⚡ Resets:{RESET} {BOLD}{len(available_credits)} available{RESET}{status_note}")
+            for i, c in enumerate(available_credits):
+                is_last = (i == len(available_credits) - 1)
+                tree_char = "└─" if is_last else "├─"
+                exp_str = c.get("expires_at")
+                exp_text = fmt_expiry(exp_str) if exp_str else "no expiry date"
+                extra_lines.append(f"   {DIM}{tree_char}{RESET} {C_YELLOW}#{i+1}:{RESET} {DIM}{exp_text}{RESET}")
+        elif len(available_credits) == 1:
+            c = available_credits[0]
+            exp_str = c.get("expires_at")
+            exp_text = f" {DIM}• {fmt_expiry(exp_str)}{RESET}" if exp_str else ""
+            extra_lines.append(f"{C_YELLOW}⚡ Resets:{RESET} {BOLD}1 available{RESET}{exp_text}{status_note}")
+        elif avail > 0:
+            extra_lines.append(f"{C_YELLOW}⚡ Resets:{RESET} {BOLD}{avail} available{RESET}{status_note}")
         else:
-            resets_str = f"{DIM}⚡ Resets: 0{RESET}"
+            extra_lines.append(f"{DIM}⚡ Resets: 0{RESET}")
 
-        credits_str = ""
         credits_obj = usage_data.get("credits")
         if isinstance(credits_obj, dict) and credits_obj.get("balance") is not None:
             bal = str(credits_obj.get("balance"))
             if bal != "0":
-                credits_str = f"{C_YELLOW}💵 Credits:{RESET} ${bal}"
+                extra_lines.append(f"{C_YELLOW}💵 Credits:{RESET} ${bal}")
 
-        render_card(name, plan, is_active, p_left, s_left, reset_in(pw), reset_in(sw), resets_str, credits_str, animate=animate)
+        render_card(name, plan, is_active, p_left, s_left, reset_in(pw), reset_in(sw), extra_lines=extra_lines, animate=animate)
 
     if rows:
         best = max(rows, key=lambda x: (x[0], x[1] + x[2]))

@@ -3,7 +3,7 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)](https://github.com/mazisel/csm)
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.6.0-green.svg)](https://github.com/mazisel/csm)
+[![Version](https://img.shields.io/badge/version-2.7.0-green.svg)](https://github.com/mazisel/csm)
 
 A powerful, safe, cross-platform **Multi-Account Switcher & Real-Time Quota Manager** for OpenAI Codex on **macOS**, **Windows**, and **Linux**.
 
@@ -20,7 +20,7 @@ Easily switch between personal, work, and secondary accounts, monitor 5-hour and
 - 🌐 **Cross-Platform:** Works natively on **macOS**, **Windows (PowerShell & CMD)**, and **Linux** with zero external pip dependencies.
 - 🔄 **Zero-Disruption Account Switching:** Switch active Codex accounts in milliseconds without losing project history or session data.
 - 🎮 **Interactive Arrow-Key Switcher (`csm use`):** Select accounts interactively using `↑/↓` arrow keys with live status previews.
-- 📊 **Live Quota & Rate-Limit Visualizer (`csm status`):** Modern Cyberpunk cards with smooth progress bar fill animations, reset timers, and reset expiration dates.
+- 📊 **Live Quota & Rate-Limit Visualizer (`csm status`):** Modern Cyberpunk cards with smooth progress bar fill animations, reset timers, and multi-credit expiration breakdown.
 - ⏱️ **Live Watch / Monitor Mode (`csm watch`):** Real-time auto-refreshing dashboard with live countdown ticker and non-blocking exit.
 - ⌨️ **Shell Tab Autocompletion (`csm completion install`):** Tab completion for zsh, bash, fish, and PowerShell.
 - 🏆 **Smart Auto-Pick (`csm pick`):** Automatically evaluates all your accounts concurrently and switches to the healthiest one.
@@ -68,25 +68,28 @@ csm status
  ╚██████╗███████║██║ ╚═╝ ██║
   ╚═════╝╚══════╝╚═╝     ╚═╝
 
-  ◆ Codex Account Engine v2.6.0
-  Fleet: 4 accounts • ⚡ 2 resets • Active: yaman
+  ◆ Codex Account Engine v2.7.0
+  Fleet: 4 accounts • ⚡ 6 resets • Active: personal
   ──────────────────────────────────────────────────────────────
 
-╭─ [ ● yaman ]────────────────────────────────────────[  ACTIVE  ]─╮
+╭─ [ ● personal ]─────────────────────────────────────[  ACTIVE  ]─╮
 │  5h Limit   ████████████████████  100.0% left   reset in 5h      │
-│  7d Limit   ████████████████░░░░   80.0% left   reset in 3d 8h   │
-│  ⚡ Resets: 1 available • expires 20 Sep (17d left)               │
+│  7d Limit   ████░░░░░░░░░░░░░░░░   20.0% left   reset in 2d 23h  │
+│  ⚡ Resets: 2 available                                           │
+│     ├─ #1: expires 20 Sep (16d 10h left)                         │
+│     └─ #2: expires 04 Oct (29d 12h left)                         │
 ╰──────────────────────────────────────────────────────────────────╯
 
-╭─ [   mukaddes ]───────────────────────────────────────[ [PLUS] ]─╮
-│  5h Limit   ░░░░░░░░░░░░░░░░░░░░    0.0% left   reset in 33m     │
-│  7d Limit   ███████░░░░░░░░░░░░░   34.0% left   reset in 3d 17h  │
-│  ⚡ Resets: 1 available • expires 20 Sep (17d left) (can apply now)│
+╭─ [   work ]───────────────────────────────────────────[ [TEAM] ]─╮
+│  5h Limit   ████████████████████  100.0% left   reset in 5h      │
+│  7d Limit   ███████████░░░░░░░░░   54.0% left   reset in 4d 7h   │
+│  ⚡ Resets: 1 available • expires 04 Oct (29d 11h left)           │
+│  💵 Credits: $15.00                                               │
 ╰──────────────────────────────────────────────────────────────────╯
 
 ╭─ [ 🏆 RECOMMENDED SWITCH ]────────────────────────────────────────╮
-│  yaman → 100.0% 5h / 80.0% 7d capacity available                 │
-│  Run csm use yaman or csm pick to activate.                      │
+│  work → 100.0% 5h / 54.0% 7d capacity available                  │
+│  Run csm use work or csm pick to activate.                       │
 ╰──────────────────────────────────────────────────────────────────╯
 ```
 
