@@ -3,7 +3,7 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)](https://github.com/mazisel/csm)
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.7.0-green.svg)](https://github.com/mazisel/csm)
+[![Version](https://img.shields.io/badge/version-2.8.0-green.svg)](https://github.com/mazisel/csm)
 
 A powerful, safe, cross-platform **Multi-Account Switcher & Real-Time Quota Manager** for OpenAI Codex on **macOS**, **Windows**, and **Linux**.
 
@@ -21,6 +21,8 @@ Easily switch between personal, work, and secondary accounts, monitor 5-hour and
 - 🔄 **Zero-Disruption Account Switching:** Switch active Codex accounts in milliseconds without losing project history or session data.
 - 🎮 **Interactive Arrow-Key Switcher (`csm use`):** Select accounts interactively using `↑/↓` arrow keys with live status previews.
 - 📊 **Live Quota & Rate-Limit Visualizer (`csm status`):** Modern Cyberpunk cards with smooth progress bar fill animations, reset timers, and multi-credit expiration breakdown.
+- 🔥 **Account Warming & Pre-Trigger (`csm warm`):** Send a ping prompt across all saved accounts concurrently to start their 5-hour rolling limit window early.
+- ⏰ **Daily Auto-Warm Scheduler (`csm schedule`):** Set a daily schedule (e.g. `08:30`) via native OS engines (`launchd` on macOS, `cron` on Linux, `schtasks` on Windows) so accounts reset earlier during your workday.
 - ⏱️ **Live Watch / Monitor Mode (`csm watch`):** Real-time auto-refreshing dashboard with live countdown ticker and non-blocking exit.
 - ⌨️ **Shell Tab Autocompletion (`csm completion install`):** Tab completion for zsh, bash, fish, and PowerShell.
 - 🏆 **Smart Auto-Pick (`csm pick`):** Automatically evaluates all your accounts concurrently and switches to the healthiest one.
@@ -68,7 +70,7 @@ csm status
  ╚██████╗███████║██║ ╚═╝ ██║
   ╚═════╝╚══════╝╚═╝     ╚═╝
 
-  ◆ Codex Account Engine v2.7.0
+  ◆ Codex Account Engine v2.8.0
   Fleet: 4 accounts • ⚡ 6 resets • Active: personal
   ──────────────────────────────────────────────────────────────
 
@@ -105,13 +107,26 @@ csm use personal
 csm use work --no-restart
 ```
 
-### 4. Live Monitor (Watch Mode)
+### 4. Pre-trigger 5-hour rolling limits (Warm accounts)
+```bash
+csm warm          # Sends "selam" to all accounts concurrently
+csm warm "hi"     # Custom ping prompt
+```
+
+### 5. Automated Daily Schedule
+```bash
+csm schedule 08:30          # Automatically warms all accounts at 08:30 AM every day
+csm schedule status         # View active schedule
+csm schedule remove         # Cancel daily schedule
+```
+
+### 6. Live Monitor (Watch Mode)
 ```bash
 csm watch       # Auto-refreshes every 15 seconds (Press Q to exit)
 csm watch 30    # Custom 30-second interval
 ```
 
-### 5. Automatically switch to the healthiest account
+### 7. Automatically switch to the healthiest account
 ```bash
 csm pick
 ```
@@ -127,6 +142,10 @@ csm pick
 | `csm use [name]` | Interactive arrow-key switcher or switch to specified account. |
 | `csm use <name> --no-restart` | Switch account without restarting Codex Desktop App. |
 | `csm status` | Show live 5h & 7d quota cards, reset timers, and reset expiration dates. |
+| `csm warm [prompt]` | Concurrently ping all accounts to start their 5h reset timer early. |
+| `csm schedule <HH:MM>` | Schedule daily auto-warm pre-trigger at specified time. |
+| `csm schedule status` | View current daily auto-warm schedule. |
+| `csm schedule remove` | Remove the daily auto-warm schedule. |
 | `csm watch [sec]` | Live auto-refreshing monitor dashboard (default: 15s, press Q to exit). |
 | `csm pick` | Automatically select and switch to the account with the most quota. |
 | `csm list` | List all saved accounts and show which one is currently active. |
@@ -158,7 +177,7 @@ csm update
 - **macOS / Linux:**
   ```bash
   rm -f ~/.local/bin/csm
-  rm -rf ~/.codex-multi ~/.zfunc/_csm
+  rm -rf ~/.codex-multi ~/.zfunc/_csm ~/Library/LaunchAgents/com.csm.warm.plist
   ```
 - **Windows (PowerShell):**
   ```powershell
@@ -170,7 +189,7 @@ csm update
 
 ## 🇹🇷 Türkçe Açıklama
 
-`csm`, **macOS**, **Windows** ve **Linux** üzerinde OpenAI Codex için geliştirilmiş çoklu hesap geçiş, canlı kota takip ve izleme yöneticisidir.
+`csm`, **macOS**, **Windows** ve **Linux** üzerinde OpenAI Codex için geliştirilmiş çoklu hesap geçiş, canlı kota takip, ön tetikleme (warm) ve izleme yöneticisidir.
 
 ### Kurulum
 - **macOS / Linux:** `curl -fsSL https://raw.githubusercontent.com/mazisel/csm/main/install.sh | bash`
@@ -179,6 +198,8 @@ csm update
 ### Temel Komutlar
 - **Hesap Ekle:** `csm add hesap_adi`
 - **Kotaları Görüntüle:** `csm status`
+- **Kotaları Önceden Isıt / Başlat:** `csm warm` (veya `csm warm "selam"`)
+- **Her Sabah Otomatik Isıt:** `csm schedule 08:30`
 - **Canlı İzleme (Watch):** `csm watch` (veya `csm watch 30`)
 - **Hesap Değiştir:** `csm use` (ok tuşlarıyla) veya `csm use hesap_adi`
 - **En Yüksek Kotalı Hesaba Geç:** `csm pick`
@@ -190,3 +211,4 @@ csm update
 ## 📄 License
 
 This project is licensed under the [MIT License](LICENSE).
+

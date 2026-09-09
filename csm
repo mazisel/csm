@@ -18,6 +18,7 @@ import platform
 import subprocess
 import re
 import select
+import plistlib
 import concurrent.futures
 from datetime import datetime
 from pathlib import Path
@@ -28,12 +29,14 @@ if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
 if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-VERSION = "2.7.0"
+VERSION = "2.8.0"
 APP_NAME = "Codex"
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 STORE_DIR = Path.home() / ".codex-multi"
 ACCOUNTS_DIR = STORE_DIR / "accounts"
 ACTIVE_FILE = STORE_DIR / "active"
+SCHEDULE_FILE = STORE_DIR / "schedule.json"
+WARM_LOG = STORE_DIR / "warm.log"
 
 USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
@@ -193,6 +196,10 @@ def usage():
   {C_GREEN}csm pick{RESET}                Auto-evaluate & activate the account with highest quota
   {C_GREEN}csm status{RESET}              Live dashboard of 5h/7d quotas, reset timers & reset bank
   {C_GREEN}csm watch [sec]{RESET}         Live auto-refreshing monitor dashboard (default: 15s)
+  {C_GREEN}csm warm [prompt]{RESET}       Pre-trigger 5h reset timer on all accounts (default: "selam")
+  {C_GREEN}csm schedule <HH:MM>{RESET}    Schedule daily auto-warm pre-trigger at specified time
+  {C_GREEN}csm schedule status{RESET}     Show active daily schedule status
+  {C_GREEN}csm schedule remove{RESET}     Remove scheduled auto-warm job
   {C_GREEN}csm list{RESET}                List all saved accounts
   {C_GREEN}csm current{RESET}             Show active account name
   {C_GREEN}csm remove <name>{RESET}       Delete a saved account
@@ -203,6 +210,8 @@ def usage():
 
 {BOLD}Examples:{RESET}
   csm status
+  csm warm "selam"
+  csm schedule 08:30
   csm watch
   csm use
   csm pick
@@ -667,7 +676,7 @@ def watch_accounts(interval: int = 15):
         while True:
             active = get_active_account()
             if is_tty:
-                sys.stdout.write("\033[2J\033[H") # Clear screen & home cursor
+                sys.stdout.write("\033[2J\033[H")
                 sys.stdout.flush()
 
             results = fetch_all_accounts_data(files, is_tty, f"Refreshing Codex quotas across {len(files)} accounts")
@@ -697,6 +706,264 @@ def watch_accounts(interval: int = 15):
         if is_tty:
             sys.stdout.write("\033[?25h")
             sys.stdout.flush()
+
+def warm_single_account(path: Path, prompt: str = "selam"):
+    name = path.stem
+    try:
+        auth = json.loads(path.read_text(encoding="utf-8"))
+        auth = refresh_auth(auth, path)
+    except Exception:
+        auth = {}
+
+    codex_bin = shutil.which("codex")
+    if not codex_bin:
+        return (name, False, "?", 0, "codex CLI not found in PATH")
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix=f"csm-warm-{name}-"))
+    start_t = time.time()
+    try:
+        shutil.copy2(path, tmp_dir / "auth.json")
+        (tmp_dir / "config.toml").write_text('cli_auth_credentials_store = "file"\n', encoding="utf-8")
+        
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(tmp_dir)
+        
+        cmd = [codex_bin, "exec", "--ephemeral", "--skip-git-repo-check", "-s", "read-only", prompt]
+        res = subprocess.run(cmd, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=35)
+        dur = time.time() - start_t
+        
+        # Query usage to get fresh reset timer
+        usage_data = {}
+        try:
+            usage_data = fetch_usage(auth)
+        except Exception:
+            pass
+            
+        rl = usage_data.get("rate_limit") or {}
+        pw = rl.get("primary_window") or {}
+        res_timer = reset_in(pw)
+        
+        return (name, True, res_timer, dur, res.stdout or res.stderr)
+    except Exception as e:
+        dur = time.time() - start_t
+        return (name, False, "?", dur, str(e))
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+def log_warm_event(details: str):
+    try:
+        WARM_LOG.parent.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        with WARM_LOG.open("a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {details}\n")
+    except Exception:
+        pass
+
+def warm_accounts(prompt: str = "selam", quiet: bool = False):
+    save_active_auth()
+    try:
+        files = sorted(ACCOUNTS_DIR.glob("*.json"))
+    except Exception as e:
+        die(f"Could not access accounts directory: {e}")
+
+    if not files:
+        die("No saved accounts found. First run: csm add <name>")
+
+    active = get_active_account()
+    is_tty = sys.stdout.isatty() and not quiet
+
+    if not quiet:
+        print_banner(len(files), 0, active)
+        print(f"  {C_PEACH}🔥{RESET} {BOLD}Rate Limit Pre-Trigger:{RESET} {DIM}Sending ping \"{prompt}\" to {len(files)} accounts...{RESET}\n")
+
+    spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    results = []
+    
+    if is_tty:
+        sys.stdout.write("\033[?25l")
+        sys.stdout.flush()
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(files)) as executor:
+            future_to_file = {executor.submit(warm_single_account, p, prompt): p for p in files}
+            spin_idx = 0
+            while not all(f.done() for f in future_to_file):
+                done_count = sum(1 for f in future_to_file if f.done())
+                if is_tty:
+                    spin = spinner[spin_idx % len(spinner)]
+                    sys.stdout.write(f"\r\033[K  {C_CYAN}{spin}{RESET}  {BOLD}Pre-triggering accounts...{RESET} {DIM}({done_count}/{len(files)}){RESET}")
+                    sys.stdout.flush()
+                time.sleep(0.05)
+                spin_idx += 1
+
+            for f in future_to_file:
+                results.append(f.result())
+
+        if is_tty:
+            sys.stdout.write("\r\033[K")
+            sys.stdout.flush()
+    finally:
+        if is_tty:
+            sys.stdout.write("\033[?25h")
+            sys.stdout.flush()
+
+    # Sort results matching files order
+    results.sort(key=lambda x: x[0])
+
+    log_entries = []
+    for name, ok, res_timer, dur, raw in results:
+        is_act = (name == active)
+        dot = f"{C_GREEN}●{RESET}" if is_act else f"{DIM}○{RESET}"
+        
+        if ok:
+            msg = f"{dot} {BOLD}{C_WHITE}{name}{RESET}  {C_CYAN}→{RESET} {C_PEACH}🔥 5h window started!{RESET} {DIM}(reset in {res_timer} • {dur:.1f}s){RESET}"
+            log_entries.append(f"{name}: OK (reset in {res_timer})")
+        else:
+            msg = f"{dot} {BOLD}{C_WHITE}{name}{RESET}  {C_CYAN}→{RESET} {C_RED}⚠️ Ping failed ({dur:.1f}s){RESET}"
+            log_entries.append(f"{name}: FAIL")
+            
+        if not quiet:
+            print(f"  {msg}")
+
+    log_warm_event(f"Pre-triggered {len(files)} accounts (prompt: '{prompt}'): " + ", ".join(log_entries))
+
+    if not quiet:
+        print(f"\n  {C_GREEN}✨ All {len(files)} accounts primed!{RESET}")
+        print(f"  {DIM}Your 5-hour rolling limits have started ticking down and will reset sooner during your workday.{RESET}\n")
+
+def get_launchd_plist_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / "com.csm.warm.plist"
+
+def schedule_warm(time_str: str, prompt: str = "selam"):
+    if not re.match(r"^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$", time_str):
+        die("Invalid time format. Please use HH:MM (e.g. 08:30, 8:00, 07:15).")
+
+    parts = time_str.split(":")
+    hour = int(parts[0])
+    minute = int(parts[1])
+    formatted_time = f"{hour:02d}:{minute:02d}"
+
+    sys_plat = platform.system()
+    csm_bin = shutil.which("csm") or str(Path.home() / ".local" / "bin" / "csm")
+
+    print(f"\n⏰ {BOLD}Setting daily auto-warm schedule at {C_CYAN}{formatted_time}{RESET} with prompt {C_YELLOW}\"{prompt}\"{RESET}...")
+
+    if sys_plat == "Darwin":
+        plist_path = get_launchd_plist_path()
+        plist_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        plist_data = {
+            "Label": "com.csm.warm",
+            "ProgramArguments": [csm_bin, "warm", prompt],
+            "StartCalendarInterval": {
+                "Hour": hour,
+                "Minute": minute
+            },
+            "StandardOutPath": str(WARM_LOG),
+            "StandardErrorPath": str(WARM_LOG),
+            "RunAtLoad": False
+        }
+        
+        with open(plist_path, "wb") as f:
+            plistlib.dump(plist_data, f)
+            
+        subprocess.run(["launchctl", "unload", "-w", str(plist_path)], capture_output=True)
+        res = subprocess.run(["launchctl", "load", "-w", str(plist_path)], capture_output=True, text=True)
+        if res.returncode != 0:
+            die(f"Failed to load launchd service: {res.stderr}")
+            
+        service_name = "macOS LaunchAgent (com.csm.warm)"
+
+    elif sys_plat == "Linux":
+        # Crontab entry
+        cron_line = f"{minute} {hour} * * * {csm_bin} warm '{prompt}' >> {WARM_LOG} 2>&1"
+        try:
+            curr_cron = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
+        except Exception:
+            curr_cron = ""
+            
+        clean_lines = [l for l in curr_cron.splitlines() if "csm warm" not in l]
+        clean_lines.append(cron_line)
+        new_cron = "\n".join(clean_lines) + "\n"
+        
+        proc = subprocess.run(["crontab", "-"], input=new_cron, text=True, capture_output=True)
+        if proc.returncode != 0:
+            die(f"Failed to update crontab: {proc.stderr}")
+            
+        service_name = "Linux cron"
+
+    elif sys_plat == "Windows":
+        cmd_str = f'"{csm_bin}" warm {prompt}'
+        task_cmd = ["schtasks", "/create", "/tn", "CSM_Warm", "/tr", cmd_str, "/sc", "daily", "/st", formatted_time, "/f"]
+        res = subprocess.run(task_cmd, capture_output=True, text=True)
+        if res.returncode != 0:
+            die(f"Failed to create Windows Scheduled Task: {res.stderr}")
+        service_name = "Windows Task Scheduler (CSM_Warm)"
+    else:
+        die(f"Unsupported operating system: {sys_plat}")
+
+    # Save meta
+    meta = {
+        "time": formatted_time,
+        "prompt": prompt,
+        "service": service_name,
+        "enabled": True,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    }
+    SCHEDULE_FILE.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+    print(f"\n{C_GREEN}✅ Daily auto-warm successfully scheduled!{RESET}")
+    print(f"  {C_CYAN}⏰ Time:{RESET}    {BOLD}{formatted_time}{RESET} (every day)")
+    print(f"  {C_PEACH}🔥 Prompt:{RESET}  \"{prompt}\"")
+    print(f"  {C_TEXT}⚙️  Engine:{RESET}  {service_name}")
+    print(f"  {DIM}📁 Logs:{RESET}    {WARM_LOG}\n")
+
+def schedule_status():
+    if not SCHEDULE_FILE.exists():
+        print(f"\n{DIM}No daily auto-warm schedule is currently configured.{RESET}")
+        print(f"👉 Set one anytime with: {C_GREEN}csm schedule 08:30{RESET}\n")
+        return
+
+    try:
+        meta = json.loads(SCHEDULE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        meta = {}
+
+    time_str = meta.get("time", "?")
+    prompt = meta.get("prompt", "selam")
+    service = meta.get("service", "System Service")
+    updated = meta.get("updated_at", "?")
+
+    print(f"\n{C_CYAN}╭─ [ ⏰ CSM DAILY AUTO-WARM SCHEDULE ]─────────────────────────╮{RESET}")
+    print(f"{C_CYAN}│{RESET}  {BOLD}Scheduled Time:{RESET}  {C_GREEN}{time_str}{RESET} (every day)")
+    print(f"{C_CYAN}│{RESET}  {BOLD}Pre-trigger Ping:{RESET}\"{prompt}\"")
+    print(f"{C_CYAN}│{RESET}  {BOLD}Service Engine:{RESET}  {service}")
+    print(f"{C_CYAN}│{RESET}  {BOLD}Last Updated:{RESET}    {DIM}{updated}{RESET}")
+    print(f"{C_CYAN}│{RESET}  {BOLD}Log Output:{RESET}      {DIM}{WARM_LOG}{RESET}")
+    print(f"{C_CYAN}╰──────────────────────────────────────────────────────────────╯{RESET}\n")
+
+def schedule_remove():
+    sys_plat = platform.system()
+    if sys_plat == "Darwin":
+        plist_path = get_launchd_plist_path()
+        if plist_path.exists():
+            subprocess.run(["launchctl", "unload", "-w", str(plist_path)], capture_output=True)
+            plist_path.unlink(missing_ok=True)
+    elif sys_plat == "Linux":
+        try:
+            curr_cron = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
+            clean_lines = [l for l in curr_cron.splitlines() if "csm warm" not in l]
+            new_cron = "\n".join(clean_lines) + "\n"
+            subprocess.run(["crontab", "-"], input=new_cron, text=True, capture_output=True)
+        except Exception:
+            pass
+    elif sys_plat == "Windows":
+        subprocess.run(["schtasks", "/delete", "/tn", "CSM_Warm", "/f"], capture_output=True)
+
+    if SCHEDULE_FILE.exists():
+        SCHEDULE_FILE.unlink(missing_ok=True)
+
+    print(f"\n{C_GREEN}✅ Daily auto-warm schedule removed.{RESET}\n")
 
 def read_key():
     if os.name == "nt":
@@ -881,6 +1148,8 @@ _csm() {
                 'pick:Auto-evaluate & switch to healthiest account'
                 'status:Live dashboard of rate limits & quota'
                 'watch:Live auto-refreshing monitor dashboard'
+                'warm:Pre-trigger 5h reset timer on all accounts'
+                'schedule:Manage daily auto-warm pre-trigger'
                 'list:List all saved accounts'
                 'current:Show active account name'
                 'refresh:Re-authenticate an account'
@@ -899,6 +1168,11 @@ _csm() {
                     accounts=(${(f)"$(csm _list_raw 2>/dev/null)"})
                     _describe -t accounts 'saved accounts' accounts
                     ;;
+                schedule)
+                    local -a sched_cmds
+                    sched_cmds=('status:View current schedule status' 'remove:Remove scheduled auto-warm job')
+                    _describe -t sched_cmds 'schedule commands' sched_cmds
+                    ;;
                 completion)
                     local -a subopts
                     subopts=('install:Install autocompletion automatically' 'zsh:Print zsh script' 'bash:Print bash script' 'fish:Print fish script' 'powershell:Print powershell script')
@@ -916,7 +1190,7 @@ compdef _csm csm
     local cur prev commands
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    commands="add use switch pick status watch list current refresh remove update completion version help"
+    commands="add use switch pick status watch warm schedule list current refresh remove update completion version help"
 
     if [ $COMP_CWORD -eq 1 ]; then
         COMPREPLY=($(compgen -W "${commands}" -- "${cur}"))
@@ -928,6 +1202,10 @@ compdef _csm csm
             local accounts
             accounts=$(csm _list_raw 2>/dev/null)
             COMPREPLY=($(compgen -W "${accounts}" -- "${cur}"))
+            return 0
+            ;;
+        schedule)
+            COMPREPLY=($(compgen -W "status remove" -- "${cur}"))
             return 0
             ;;
         completion)
@@ -944,14 +1222,15 @@ complete -F _csm_completions csm
 end
 
 complete -c csm -f
-complete -c csm -n "__fish_use_subcommand" -a "add use switch pick status watch list current refresh remove update completion version help"
+complete -c csm -n "__fish_use_subcommand" -a "add use switch pick status watch warm schedule list current refresh remove update completion version help"
 complete -c csm -n "__fish_seen_subcommand_from use switch remove refresh" -a "(__fish_csm_accounts)"
+complete -c csm -n "__fish_seen_subcommand_from schedule" -a "status remove"
 complete -c csm -n "__fish_seen_subcommand_from completion" -a "install zsh bash fish powershell"
 """
     elif shell == "powershell":
         return """Register-ArgumentCompleter -Native -CommandName csm -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
-    $commands = @('add','use','switch','pick','status','watch','list','current','refresh','remove','update','completion','version','help')
+    $commands = @('add','use','switch','pick','status','watch','warm','schedule','list','current','refresh','remove','update','completion','version','help')
     $tokens = $commandAst.Tokens
     if ($tokens.Count -le 2) {
         $commands | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
@@ -1100,6 +1379,20 @@ def main():
             except ValueError:
                 pass
         watch_accounts(interval=sec)
+
+    elif cmd in ("warm", "prime"):
+        prompt = args[1] if len(args) > 1 else "selam"
+        warm_accounts(prompt=prompt)
+
+    elif cmd == "schedule":
+        if len(args) < 2 or args[1] in ("status", "list"):
+            schedule_status()
+        elif args[1] in ("remove", "delete", "clear", "cancel", "disable"):
+            schedule_remove()
+        else:
+            time_val = args[1]
+            prompt = args[2] if len(args) > 2 else "selam"
+            schedule_warm(time_val, prompt=prompt)
 
     elif cmd == "pick":
         pick_account()
