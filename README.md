@@ -3,7 +3,7 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)](https://github.com/mazisel/csm)
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.8.0-green.svg)](https://github.com/mazisel/csm)
+[![Version](https://img.shields.io/badge/version-2.8.1-green.svg)](https://github.com/mazisel/csm)
 
 A powerful, safe, cross-platform **Multi-Account Switcher & Real-Time Quota Manager** for OpenAI Codex on **macOS**, **Windows**, and **Linux**.
 
@@ -70,7 +70,7 @@ csm status
  ╚██████╗███████║██║ ╚═╝ ██║
   ╚═════╝╚══════╝╚═╝     ╚═╝
 
-  ◆ Codex Account Engine v2.8.0
+  ◆ Codex Account Engine v2.8.1
   Fleet: 4 accounts • ⚡ 6 resets • Active: personal
   ──────────────────────────────────────────────────────────────
 
@@ -82,7 +82,7 @@ csm status
 │     └─ #2: expires 04 Oct (29d 12h left)                         │
 ╰──────────────────────────────────────────────────────────────────╯
 
-╭─ [   work ]───────────────────────────────────────────[ [TEAM] ]─╮
+╭─ [   work ]───────────────────────────────────────────[   TEAM ]─╮
 │  5h Limit   ████████████████████  100.0% left   reset in 5h      │
 │  7d Limit   ███████████░░░░░░░░░   54.0% left   reset in 4d 7h   │
 │  ⚡ Resets: 1 available • expires 04 Oct (29d 11h left)           │

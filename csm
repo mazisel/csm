@@ -29,7 +29,7 @@ if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
 if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-VERSION = "2.8.0"
+VERSION = "2.8.1"
 APP_NAME = "Codex"
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 STORE_DIR = Path.home() / ".codex-multi"
@@ -419,8 +419,55 @@ def fetch_account_data(path: Path):
     except Exception as e:
         return (name, None, None, str(e))
 
+def parse_rate_limits(usage_data: dict):
+    rl = usage_data.get("rate_limit") or {}
+    pw = rl.get("primary_window")
+    sw = rl.get("secondary_window")
+    
+    w_5h = None
+    w_7d = None
+    
+    for w in (pw, sw):
+        if not isinstance(w, dict):
+            continue
+        sec = w.get("limit_window_seconds")
+        if sec is not None:
+            if sec <= 86400:  # 5 hours = 18000s
+                w_5h = w
+            else:  # 7 days = 604800s
+                w_7d = w
+        else:
+            if w is pw and not w_5h:
+                w_5h = w
+            elif not w_7d:
+                w_7d = w
+
+    if w_5h:
+        p_used = float(w_5h.get("used_percent", 0))
+        p_left = max(0.0, 100.0 - p_used)
+        p_reset = reset_in(w_5h)
+    else:
+        # If 5h window is missing, check if 7d limit is reached (100% used)
+        if w_7d and float(w_7d.get("used_percent", 0)) >= 100:
+            p_left = 0.0
+            p_reset = reset_in(w_7d)
+        else:
+            p_left = 100.0
+            p_reset = "-"
+
+    if w_7d:
+        s_used = float(w_7d.get("used_percent", 0))
+        s_left = max(0.0, 100.0 - s_used)
+        s_reset = reset_in(w_7d)
+    else:
+        s_left = 100.0
+        s_reset = "-"
+
+    return p_left, s_left, p_reset, s_reset
+
 def render_card(name: str, plan: str, is_active: bool, p_left: float, s_left: float, p_reset: str, s_reset: str, extra_lines: list = None, animate: bool = True):
-    width = 68
+    term_cols = shutil.get_terminal_size((68, 20)).columns
+    width = min(68, max(46, term_cols - 2))
     dash = "─"
     is_tty = sys.stdout.isatty() and animate
     
@@ -432,7 +479,7 @@ def render_card(name: str, plan: str, is_active: bool, p_left: float, s_left: fl
     else:
         border_col = C_SURFACE
         title_col = f"{BOLD}{C_TEXT}"
-        badge = f"{DIM}[{plan.upper()}]{RESET}"
+        badge = f"{DIM}{plan.upper()}{RESET}"
         dot = " "
 
     header_left = f"╭─ [ {dot} {title_col}{name}{RESET} ]"
@@ -534,14 +581,7 @@ def render_dashboard(results: dict, files: list, active: str, animate: bool = Tr
             print(f"{border_col}╰{'─' * 60}╯{RESET}\n")
             continue
 
-        rl = usage_data.get("rate_limit") or {}
-        pw = rl.get("primary_window") or {}
-        sw = rl.get("secondary_window") or {}
-
-        p_used = float(pw.get("used_percent", 0))
-        s_used = float(sw.get("used_percent", 0))
-        p_left = max(0.0, 100.0 - p_used)
-        s_left = max(0.0, 100.0 - s_used)
+        p_left, s_left, p_reset, s_reset = parse_rate_limits(usage_data)
         plan = usage_data.get("plan_type") or "plus"
 
         score = min(p_left, s_left)
@@ -585,7 +625,7 @@ def render_dashboard(results: dict, files: list, active: str, animate: bool = Tr
             if bal != "0":
                 extra_lines.append(f"{C_YELLOW}💵 Credits:{RESET} ${bal}")
 
-        render_card(name, plan, is_active, p_left, s_left, reset_in(pw), reset_in(sw), extra_lines=extra_lines, animate=animate)
+        render_card(name, plan, is_active, p_left, s_left, p_reset, s_reset, extra_lines=extra_lines, animate=animate)
 
     if rows:
         best = max(rows, key=lambda x: (x[0], x[1] + x[2]))
@@ -739,9 +779,7 @@ def warm_single_account(path: Path, prompt: str = "selam"):
         except Exception:
             pass
             
-        rl = usage_data.get("rate_limit") or {}
-        pw = rl.get("primary_window") or {}
-        res_timer = reset_in(pw)
+        _, _, res_timer, _ = parse_rate_limits(usage_data) if usage_data else (0, 0, "?", "?")
         
         return (name, True, res_timer, dur, res.stdout or res.stderr)
     except Exception as e:
@@ -1074,11 +1112,7 @@ def pick_account():
         fetch_map = fetch_all_accounts_data(files, is_tty, f"Evaluating healthiest Codex account across {len(files)} accounts")
         for name, (usage_data, _, err) in fetch_map.items():
             if usage_data and not err:
-                rl = usage_data.get("rate_limit") or {}
-                pw = rl.get("primary_window") or {}
-                sw = rl.get("secondary_window") or {}
-                pleft = max(0.0, 100 - float(pw.get("used_percent", 0)))
-                sleft = max(0.0, 100 - float(sw.get("used_percent", 0)))
+                pleft, sleft, _, _ = parse_rate_limits(usage_data)
                 score = (min(pleft, sleft), pleft + sleft)
                 results.append((score, pleft, sleft, name))
     finally:
