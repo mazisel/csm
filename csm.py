@@ -29,7 +29,7 @@ if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
 if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-VERSION = "2.8.1"
+VERSION = "2.8.2"
 APP_NAME = "Codex"
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 STORE_DIR = Path.home() / ".codex-multi"
@@ -450,7 +450,10 @@ def parse_rate_limits(usage_data: dict):
         # If 5h window is missing, check if 7d limit is reached (100% used)
         if w_7d and float(w_7d.get("used_percent", 0)) >= 100:
             p_left = 0.0
-            p_reset = reset_in(w_7d)
+            p_reset = f"{reset_in(w_7d)} (7d cap)"
+        elif w_7d:
+            p_left = 100.0
+            p_reset = "(7d pool only)"
         else:
             p_left = 100.0
             p_reset = "-"
@@ -470,6 +473,9 @@ def render_card(name: str, plan: str, is_active: bool, p_left: float, s_left: fl
     width = min(68, max(46, term_cols - 2))
     dash = "─"
     is_tty = sys.stdout.isatty() and animate
+    
+    p_reset_str = p_reset if (p_reset.startswith("(") or p_reset.startswith("reset ") or p_reset == "-") else f"reset {p_reset}"
+    s_reset_str = s_reset if (s_reset.startswith("(") or s_reset.startswith("reset ") or s_reset == "-") else f"reset {s_reset}"
     
     if is_active:
         border_col = C_CYAN
@@ -496,7 +502,7 @@ def render_card(name: str, plan: str, is_active: bool, p_left: float, s_left: fl
             ratio = step / 8.0
             b5 = progress_bar(p_left, ratio)
             val5 = p_left * ratio
-            content_5 = f"  {DIM}5h Limit{RESET}   {b5}  {BOLD}{val5:5.1f}%{RESET} {DIM}left   reset {p_reset}{RESET}"
+            content_5 = f"  {DIM}5h Limit{RESET}   {b5}  {BOLD}{val5:5.1f}%{RESET} {DIM}left   {p_reset_str}{RESET}"
             pad1 = width - len(strip_ansi(content_5)) - 2
             sys.stdout.write(f"\r\033[K{border_col}│{RESET}{content_5}{' ' * max(0, pad1)}{border_col}│{RESET}")
             sys.stdout.flush()
@@ -507,7 +513,7 @@ def render_card(name: str, plan: str, is_active: bool, p_left: float, s_left: fl
             ratio = step / 8.0
             b7 = progress_bar(s_left, ratio)
             val7 = s_left * ratio
-            content_7 = f"  {DIM}7d Limit{RESET}   {b7}  {BOLD}{val7:5.1f}%{RESET} {DIM}left   reset {s_reset}{RESET}"
+            content_7 = f"  {DIM}7d Limit{RESET}   {b7}  {BOLD}{val7:5.1f}%{RESET} {DIM}left   {s_reset_str}{RESET}"
             pad2 = width - len(strip_ansi(content_7)) - 2
             sys.stdout.write(f"\r\033[K{border_col}│{RESET}{content_7}{' ' * max(0, pad2)}{border_col}│{RESET}")
             sys.stdout.flush()
@@ -516,11 +522,11 @@ def render_card(name: str, plan: str, is_active: bool, p_left: float, s_left: fl
     else:
         bar5 = progress_bar(p_left)
         bar7 = progress_bar(s_left)
-        content_5 = f"  {DIM}5h Limit{RESET}   {bar5}  {BOLD}{p_left:5.1f}%{RESET} {DIM}left   reset {p_reset}{RESET}"
+        content_5 = f"  {DIM}5h Limit{RESET}   {bar5}  {BOLD}{p_left:5.1f}%{RESET} {DIM}left   {p_reset_str}{RESET}"
         pad1 = width - len(strip_ansi(content_5)) - 2
         print(f"{border_col}│{RESET}{content_5}{' ' * max(0, pad1)}{border_col}│{RESET}")
         
-        content_7 = f"  {DIM}7d Limit{RESET}   {bar7}  {BOLD}{s_left:5.1f}%{RESET} {DIM}left   reset {s_reset}{RESET}"
+        content_7 = f"  {DIM}7d Limit{RESET}   {bar7}  {BOLD}{s_left:5.1f}%{RESET} {DIM}left   {s_reset_str}{RESET}"
         pad2 = width - len(strip_ansi(content_7)) - 2
         print(f"{border_col}│{RESET}{content_7}{' ' * max(0, pad2)}{border_col}│{RESET}")
     
